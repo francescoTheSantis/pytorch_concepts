@@ -21,6 +21,7 @@ Summary
    AncestralSamplingInference
    LazyAncestralSamplingInference
    IndependentInference
+   ExactInference
 
 
 Class Documentation
@@ -57,6 +58,11 @@ Class Documentation
    :show-inheritance:
 
 .. autoclass:: IndependentInference
+   :members:
+   :undoc-members:
+   :show-inheritance:
+
+.. autoclass:: ExactInference
    :members:
    :undoc-members:
    :show-inheritance:
