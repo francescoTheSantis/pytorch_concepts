@@ -62,15 +62,15 @@ class ForwardInference(BaseInference, ABC):
         >>> # Where A is a root concept and B depends on A
         >>>
         >>> # Define variables
-        >>> input_var = LatentVariable('input', distribution=Delta, size=10)
-        >>> var_A = ConceptVariable('A', distribution=Bernoulli, size=1)
-        >>> var_B = ConceptVariable('B', distribution=Bernoulli, size=1)
+        >>> input_var = LatentVariable('input', parents=[], distribution=Delta, size=10)
+        >>> var_A = ConceptVariable('A', parents=['input'], distribution=Bernoulli, size=1)
+        >>> var_B = ConceptVariable('B', parents=['A'], distribution=Bernoulli, size=1)
         >>>
         >>> # Define CPDs (modules that compute each variable)
         >>> from torch.nn import Identity, Linear
         >>> latent_cpd = ParametricCPD('input', parametrization=Identity())
-        >>> cpd_A = ParametricCPD('A', parametrization=Linear(10, 1), parents=[input_var])  # latent -> A
-        >>> cpd_B = ParametricCPD('B', parametrization=Linear(1, 1), parents=[var_A])   # A -> B
+        >>> cpd_A = ParametricCPD('A', parametrization=Linear(10, 1))  # latent -> A
+        >>> cpd_B = ParametricCPD('B', parametrization=Linear(1, 1))   # A -> B
         >>>
         >>> # Create probabilistic model
         >>> pgm = ProbabilisticModel(
@@ -123,14 +123,10 @@ class ForwardInference(BaseInference, ABC):
         # Cache forward-signature parameter names per CPD to avoid
         # calling inspect.signature() on every forward pass.
         self._cpd_allowed_params: Dict[str, Set[str]] = {}
-        self._cached_parents: Dict[str, List] = {}
         for var in self.probabilistic_model.variables:
             cpd = self.probabilistic_model.get_module_of_concept(var.concept)
             if cpd is not None:
                 self._cpd_allowed_params[var.concept] = self._get_allowed_params(cpd)
-                self._cached_parents[var.concept] = getattr(cpd, 'parents', [])
-            else:
-                self._cached_parents[var.concept] = []
 
     @abstractmethod
     def activate(self, pred: torch.Tensor, variable: Variable) -> torch.Tensor:
@@ -174,12 +170,10 @@ class ForwardInference(BaseInference, ABC):
 
         for var in self.probabilistic_model.variables:
             child_name = var.concept
-            cpd = self.probabilistic_model.get_module_of_concept(child_name)
-            if cpd:
-                for parent_var in cpd.parents:
-                    parent_name = parent_var.concept
-                    adj[parent_name].append(child_name)
-                    in_degree[child_name] += 1
+            for parent_var in var.parents:
+                parent_name = parent_var.concept
+                adj[parent_name].append(child_name)
+                in_degree[child_name] += 1
 
         # Nodes with zero inbound edges = level 0
         queue = [self.variable_map[name] for name, deg in in_degree.items() if deg == 0]
@@ -231,12 +225,9 @@ class ForwardInference(BaseInference, ABC):
         """
         concept_name = var.concept
         
-        # Get parents from cached info (robust to intervention module replacement)
-        parents = self._cached_parents.get(concept_name, [])
-        
         # If evidence is provided for a non-root variable, use it directly as output
         # (Root nodes still pass their input through the CPD)
-        if parents and concept_name in evidence:
+        if var.parents and concept_name in evidence:
             return concept_name, evidence[concept_name]
         
         parametric_cpd = self.probabilistic_model.get_module_of_concept(concept_name)
@@ -245,7 +236,7 @@ class ForwardInference(BaseInference, ABC):
             raise RuntimeError(f"Missing parametric_cpd for variable/concept: {concept_name}")
 
         # 1. Root nodes (no parents)
-        if not parents:
+        if not var.parents:
             if concept_name not in evidence:
                 raise ValueError(f"Root variable '{concept_name}' requires an input tensor in the 'evidence' dictionary.")
             input_tensor = evidence[concept_name]
@@ -256,7 +247,7 @@ class ForwardInference(BaseInference, ABC):
         else:
             parent_concepts = []
             parent_input = []
-            for parent_var in parents:
+            for parent_var in var.parents:
                 parent_name = parent_var.concept
                 if parent_name not in results:
                     # Should not happen with correct topological sort
@@ -583,7 +574,10 @@ class ForwardInference(BaseInference, ABC):
         queue = list(query_concepts)
         while queue:
             concept_name = queue.pop()
-            for parent_var in self._cached_parents.get(concept_name, []):
+            var = self.variable_map.get(concept_name)
+            if var is None:
+                continue
+            for parent_var in var.parents:
                 parent_name = parent_var.concept
                 if parent_name not in needed:
                     needed.add(parent_name)
@@ -720,11 +714,9 @@ class ForwardInference(BaseInference, ABC):
         children_map: Dict[str, Set[str]] = defaultdict(set)
         for var in self.probabilistic_model.variables:
             child_name = var.concept
-            cpd = self.probabilistic_model.get_module_of_concept(child_name)
-            if cpd:
-                for parent in cpd.parents:
-                    parent_name = parent.concept
-                    children_map[parent_name].add(child_name)
+            for parent in var.parents:
+                parent_name = parent.concept
+                children_map[parent_name].add(child_name)
 
         # All variable names in the ProbabilisticModel
         all_names: Set[str] = {var.concept for var in self.probabilistic_model.variables}
@@ -784,13 +776,10 @@ class ForwardInference(BaseInference, ABC):
         # --- 3) Rewrite parents using keep_names, rename_map, and adjacency gating ---
         for var in self.probabilistic_model.variables:
             child_name = var.concept
-            cpd = self.probabilistic_model.get_module_of_concept(child_name)
-            if cpd is None:
-                continue
             new_parents: List[Variable] = []
             seen: Set[str] = set()
 
-            for parent in cpd.parents:
+            for parent in var.parents:
                 parent_orig = parent.concept
 
                 # 3a) Adjacency gating: if adj defines this edge and it's zero, drop it
@@ -824,7 +813,7 @@ class ForwardInference(BaseInference, ABC):
                 new_parents.append(self.variable_map[mapped_parent])
                 seen.add(mapped_parent)
 
-            cpd.parents = new_parents
+            var.parents = new_parents
 
         # --- 4) Build final ordered list of variables (unique, no duplicates) ---
         new_variables: List[Variable] = []
@@ -857,5 +846,5 @@ class ForwardInference(BaseInference, ABC):
         # --- 6) Update available_query_vars to reflect the unrolled graph ---
         self._unrolled_query_vars = set(v.concept for v in new_variables)
 
-        return ProbabilisticModel(new_variables, parametric_cpds=new_parametric_cpds)
+        return ProbabilisticModel(new_variables, new_parametric_cpds)
 
