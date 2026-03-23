@@ -14,8 +14,8 @@ from itertools import product
 
 import torch.nn as nn
 
-from .factor import ParametricFactor
-from .factor_ops import Factor
+from .parametric_factor import ParametricFactor
+from .factor import Factor
 from .variable import Variable
 from .....distributions import Delta
 
