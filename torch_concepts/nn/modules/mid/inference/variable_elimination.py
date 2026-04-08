@@ -8,7 +8,7 @@ flow back through the neural-network parameters that produced the factor
 potentials — enabling end-to-end training through inference.
 """
 
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional
 
 import torch
 
@@ -197,6 +197,7 @@ class VariableEliminationInference(BaseInference):
     ...                            factors=[cpd_A, cpd_B])
     >>> ve = VariableEliminationInference(model)
     >>> result = ve.query(query=['B'], evidence={'A': 1})
+    >>> result.values  # normalised P(B | A=1)
     """
 
     def __init__(
@@ -216,7 +217,8 @@ class VariableEliminationInference(BaseInference):
         self,
         query: List[str],
         evidence: Optional[Dict[str, int]] = None,
-    ) -> Tuple[torch.Tensor, Factor]:
+        return_logits: bool = False,
+    ) -> Factor:
         """
         Compute the conditional distribution ``P(query | evidence)``.
 
@@ -228,16 +230,18 @@ class VariableEliminationInference(BaseInference):
             Mapping from observed variable names to their observed state
             index (0-based).  For example ``{'A': 1}`` means A is observed
             in state 1.
+        return_logits : bool, optional
+            If ``True``, return log-probabilities (unnormalised) instead
+            of normalised probabilities.  Useful during training when the
+            loss expects log-scale values.  Default: ``False``.
 
         Returns
         -------
-        Z : torch.Tensor
-            The normalisation constant (scalar).
-        result : Factor
-            The (normalised) conditional factor over the query variables.
-            ``result.values`` sums to 1 and ``result.variables`` matches
-            *query* (possibly in a different order determined by the
-            factor operations).
+        Factor
+            A factor over the query variables.  When ``return_logits`` is
+            ``False`` (default) the values are normalised probabilities
+            that sum to 1.  When ``True`` the values are
+            log-potentials (unnormalised).
         """
         if evidence is None:
             evidence = {}
@@ -270,10 +274,14 @@ class VariableEliminationInference(BaseInference):
         # 5. Sum-Product VE
         phi_star = _sum_product_ve(factors, elim_order)
 
-        # 6. Normalise
-        Z, normalised = phi_star.normalize()
+        # 6. Return logits or normalised probabilities
+        if return_logits:
+            log_values = torch.log(phi_star.values.clamp(min=1e-10))
+            return Factor(log_values, phi_star.variables,
+                          phi_star.cardinalities)
 
-        return Z, normalised
+        _Z, normalised = phi_star.normalize()
+        return normalised
 
     def ground_truth_to_evidence(
         self,

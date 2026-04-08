@@ -84,7 +84,7 @@ class Factor:
         Compute the factor product of ``self`` and *other*.
 
         The resulting factor has scope
-        ``self.variables ∪ other.variables``.  Shared variables are
+        ``self.variables U other.variables``.  Shared variables are
         aligned and element-wise multiplied; non-shared variables are
         broadcast.
 

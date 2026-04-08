@@ -11,7 +11,7 @@ Scenario — Job Offer Model
 ::
 
     [Economy]  [Talent]
-         \\      /
+        \      /
         [Studies]
             |
        [JobOffer]
@@ -134,13 +134,12 @@ def train(model: ProbabilisticModel, data: torch.Tensor,
     for epoch in range(n_epochs):
         optimizer.zero_grad()
 
-        # Joint distribution via VE (no evidence → full joint)
-        _Z, joint = ve.query(query=NODE_NAMES, evidence={})
+        # Joint distribution via VE (no evidence → log-probabilities)
+        joint = ve.query(query=NODE_NAMES, evidence={}, return_logits=True)
 
         # log P for every sample
-        log_joint = torch.log(joint.values.clamp(min=1e-10))
-        sample_log_probs = log_joint[idx[:, 0], idx[:, 1],
-                                     idx[:, 2], idx[:, 3]]
+        sample_log_probs = joint.values[idx[:, 0], idx[:, 1],
+                                        idx[:, 2], idx[:, 3]]
         loss = -sample_log_probs.mean()
 
         loss.backward()
@@ -249,7 +248,7 @@ def exact_queries(model: ProbabilisticModel, data: torch.Tensor):
         print("\n--- Marginal probabilities ---")
         print(f"  {'query':<45s} {'VE':>8s}  {'Empirical':>9s}")
         for var in NODE_NAMES:
-            _Z, result = ve.query(query=[var], evidence={})
+            result = ve.query(query=[var], evidence={})
             ve_p = result.values[1].item()
             emp_p = _empirical_cond(data, COL[var], 1, {})
             print(f"  P({var}=1){'':<35s} {ve_p:8.4f}  {emp_p:9.4f}")
@@ -264,7 +263,7 @@ def exact_queries(model: ProbabilisticModel, data: torch.Tensor):
             ("job_offer", {"studies": 1}),
         ]
         for qvar, ev in queries_fwd:
-            _Z, r = ve.query(query=[qvar], evidence=ev)
+            r = ve.query(query=[qvar], evidence=ev)
             ve_p = r.values[1].item()
             emp_ev = {COL[k]: v for k, v in ev.items()}
             emp_p = _empirical_cond(data, COL[qvar], 1, emp_ev)
@@ -282,7 +281,7 @@ def exact_queries(model: ProbabilisticModel, data: torch.Tensor):
             ("economy", {"job_offer": 1, "talent": 1}),
         ]
         for qvar, ev in queries_ea:
-            _Z, r = ve.query(query=[qvar], evidence=ev)
+            r = ve.query(query=[qvar], evidence=ev)
             ve_p = r.values[1].item()
             emp_ev = {COL[k]: v for k, v in ev.items()}
             emp_p = _empirical_cond(data, COL[qvar], 1, emp_ev)
@@ -293,8 +292,8 @@ def exact_queries(model: ProbabilisticModel, data: torch.Tensor):
         # 4. Joint conditional
         print("\n--- Joint conditional queries ---")
         print(f"  {'query':<45s} {'VE':>8s}  {'Empirical':>9s}")
-        _Z, r = ve.query(query=["economy", "talent"],
-                         evidence={"job_offer": 1})
+        r = ve.query(query=["economy", "talent"],
+                    evidence={"job_offer": 1})
         emp_ev = {COL["job_offer"]: 1}
         for e in range(2):
             for t in range(2):
