@@ -262,7 +262,7 @@ class TestCBMTraining(unittest.TestCase):
         y = torch.randint(0, 2, (4, 3)).float()
         
         model.train()
-        out = model(query=['c1', 'c2', 'task'], x=x, return_logits=True)
+        out = model(query=['c1', 'c2', 'task'], x=x, return_parameters=True)
         loss = loss_fn(out.logits, y)
         
         self.assertTrue(loss.requires_grad)

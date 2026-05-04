@@ -6,7 +6,7 @@ between inference engines, models, losses, and metrics.
     Inference (mid-level)          Model (high-level)         Training loop
     ─────────────────────────   ──────────────────────────   ─────────────────
     query() → InferenceOutput   forward() → ModelOutput      shared_step()
-      .logits  (return_logits)    .logits  (return_logits)     reads .logits,
+      .parameters  (return_parameters)  .logits  (return_logits)  reads .logits,
       .probs   (return_probs)     .probs   (return_probs)      .target, etc.
       .joint   (return_joint)     .joint   (return_joint)
 
@@ -27,8 +27,8 @@ Examples
 >>> loss = concept_loss(output)
 >>>
 >>> # Inference always returns InferenceOutput
->>> result = inference.query(query, evidence, return_logits=True)
->>> result.logits.shape   # concatenated logits
+>>> result = inference.query(query, evidence, return_parameters=True)
+>>> result.parameters.shape   # concatenated raw distribution parameters
 """
 from dataclasses import dataclass, field
 from typing import Dict, Optional
@@ -40,25 +40,41 @@ import torch
 class InferenceOutput:
     """Structured output from an inference engine.
 
-    Always returned by ``ForwardInference.query()``. Which fields
-    are populated is controlled by ``return_logits``, ``return_probs``,
-    and ``return_joint`` parameters passed to ``query()``.
+    Always returned by ``ForwardInference.query()`` and all other inference
+    engines.  Which fields are populated is controlled by ``return_logits``,
+    ``return_probs``, and ``return_joint`` parameters passed to ``query()``.
 
     Attributes
     ----------
-    logits : torch.Tensor, optional
-        Concatenated raw logits (before activation) for queried concepts.
-        Populated when ``return_logits=True``.
+    parameters : torch.Tensor, optional
+        Concatenated raw distribution parameters (before activation) for
+        queried concepts.
+        Populated when ``return_parameters=True``.
     probs : torch.Tensor, optional
         Concatenated activated predictions for queried concepts.
         Populated when ``return_probs=True`` (default).
     joint : torch.Tensor, optional
         Joint (unnormalized) log probabilities.
         Populated when ``return_joint=True``.
+    loss : torch.Tensor, optional
+        Training loss computed internally by the inference engine (e.g. the
+        negative ELBO from :class:`ELBOInference`).  Present only for engines
+        that compute their own loss (e.g. variational training).  Call
+        ``result.loss.backward()`` in the training loop instead of computing
+        a loss manually from ``result.parameters``.
+    samples : dict of str -> torch.Tensor, optional
+        Per-variable raw posterior samples returned by sample-based engines
+        (``ImportanceQuery``, ``ExactDiscreteQuery``, ``MCMCQuery``,
+        ``BayesianNetwork.query``).  Each tensor has shape
+        ``(num_samples, *batch_dims, size)``.  For these engines, ``probs``
+        is set to the empirical mean over the leading sample dimension
+        (concatenated in the requested-variable order).
     """
-    logits: Optional[torch.Tensor] = None
+    parameters: Optional[torch.Tensor] = None
     probs: Optional[torch.Tensor] = None
     joint: Optional[torch.Tensor] = None
+    loss: Optional[torch.Tensor] = None
+    samples: Optional[Dict[str, torch.Tensor]] = None
 
 
 @dataclass

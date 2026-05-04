@@ -682,7 +682,7 @@ class TestCEMTraining(unittest.TestCase):
         y = torch.randint(0, 2, (4, 3)).float()
         
         model.train()
-        out = model(query=['c1', 'c2', 'task'], x=x, return_logits=True)
+        out = model(query=['c1', 'c2', 'task'], x=x, return_parameters=True)
         loss = loss_fn(out.logits, y)
         
         self.assertTrue(loss.requires_grad)
@@ -719,7 +719,7 @@ class TestCEMTraining(unittest.TestCase):
         y = torch.randint(0, 2, (8, 3)).float()
         
         optimizer.zero_grad()
-        out = model(query=['c1', 'c2', 'task'], x=x, return_logits=True)
+        out = model(query=['c1', 'c2', 'task'], x=x, return_parameters=True)
         loss = loss_fn(out.logits, y)
         loss.backward()
         optimizer.step()
@@ -745,7 +745,7 @@ class TestCEMTraining(unittest.TestCase):
         y = torch.randn(8, 3)
         
         optimizer.zero_grad()
-        out = model(query=['c1', 'c2', 'task'], x=x, return_logits=True)
+        out = model(query=['c1', 'c2', 'task'], x=x, return_parameters=True)
         loss = loss_fn(out.logits, y)
         loss.backward()
         optimizer.step()

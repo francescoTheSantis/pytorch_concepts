@@ -33,18 +33,18 @@ from torch_concepts.nn.modules.low.predictors.linear import LinearConceptToConce
 
 def _make_variable(name, distribution, size=1):
     """Create a standalone ConceptVariable with the given distribution."""
-    return ConceptVariable(name, distribution=distribution, size=size)
+    return ConceptVariable(concept=name, distribution=distribution, size=size)
 
 
 def _make_chain_pgm(dist_A, size_A, dist_B, size_B, latent=10):
     """Build a simple chain: input -> A -> B with specified distributions."""
-    input_var = LatentVariable('input', distribution=Delta, size=latent)
-    var_A = ConceptVariable('A', distribution=dist_A, size=size_A)
-    var_B = ConceptVariable('B', distribution=dist_B, size=size_B)
+    input_var = LatentVariable(concept='input', distribution=Delta, size=latent)
+    var_A = ConceptVariable(concept='A', distribution=dist_A, size=size_A)
+    var_B = ConceptVariable(concept='B', distribution=dist_B, size=size_B)
 
-    cpd_input = ParametricCPD('input', parametrization=nn.Identity())
-    cpd_A = ParametricCPD('A', parametrization=nn.Linear(latent, size_A), parents=['input'])
-    cpd_B = ParametricCPD('B', parametrization=LinearConceptToConcept(size_A, size_B), parents=['A'])
+    cpd_input = ParametricCPD(concept='input', parametrization=nn.Identity())
+    cpd_A = ParametricCPD(concept='A', parametrization=nn.Linear(latent, size_A), parents=['input'])
+    cpd_B = ParametricCPD(concept='B', parametrization=LinearConceptToConcept(size_A, size_B), parents=['A'])
 
     pgm = ProbabilisticModel(
         variables=[input_var, var_A, var_B],
@@ -149,14 +149,13 @@ class TestActivateUnknownDistribution:
             _make_variable('c', _CustomDist)
 
     def test_identity_when_distribution_is_none(self):
-        """Variable whose distribution is None."""
+        """Variable whose distribution is None should raise via make_distribution."""
         var = _make_variable('c', Bernoulli)
         var.distribution = None  # override to None
-        var.activation = lambda x: x  # match the fallback
         inf = DeterministicInference.__new__(DeterministicInference)
         pred = torch.randn(4, 1)
-        result = inf.activate(pred, var)
-        torch.testing.assert_close(result, pred)
+        with pytest.raises(AttributeError):
+            inf.activate(pred, var)
 
 
 # ===========================================================================
@@ -270,9 +269,9 @@ class TestDeterministicQueryBernoulli:
         assert out.probs.max() <= 1.0
 
     def test_return_logits(self):
-        logits = self.inf.query(['A', 'B'], evidence={'input': self.x}, return_logits=True)
+        logits = self.inf.query(['A', 'B'], evidence={'input': self.x}, return_parameters=True)
         probs = self.inf.query(['A', 'B'], evidence={'input': self.x})
-        assert not torch.allclose(logits.logits, probs.probs)
+        assert not torch.allclose(logits.parameters, probs.probs)
 
 
 class TestDeterministicQueryCategorical:
@@ -328,10 +327,10 @@ class TestDeterministicQueryDelta:
         inf = DeterministicInference(pgm)
         x = torch.randn(4, 10)
         # Delta concept A: raw logits passed through unchanged
-        logits = inf.query(['A'], evidence={'input': x}, return_logits=True)
+        logits = inf.query(['A'], evidence={'input': x}, return_parameters=True)
         activated = inf.query(['A'], evidence={'input': x})
         # For Delta, activate is identity, so logits == activated
-        torch.testing.assert_close(logits.logits, activated.probs)
+        torch.testing.assert_close(logits.parameters, activated.probs)
 
 
 class TestDeterministicQueryMixed:
@@ -357,8 +356,8 @@ class TestDeterministicQueryMixed:
         pgm = _make_chain_pgm(OneHotCategorical, 3, Bernoulli, 1)
         inf = DeterministicInference(pgm, detach=True)
         x = torch.randn(4, 10)
-        logits = inf.query(['A', 'B'], evidence={'input': x}, return_logits=True)
-        assert logits.logits.shape == (4, 4)
+        logits = inf.query(['A', 'B'], evidence={'input': x}, return_parameters=True)
+        assert logits.parameters.shape == (4, 4)
 
 
 class TestDeterministicQueryLazy:

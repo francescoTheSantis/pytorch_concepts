@@ -38,9 +38,9 @@ def _build_chain_pgm():
     linear_A = nn.Linear(4, 1)
     linear_B = LinearConceptToConcept(1, 1)
 
-    cpd_input = ParametricCPD("input", parametrization=nn.Identity())
-    cpd_A = ParametricCPD("A", parametrization=linear_A, parents=["input"])
-    cpd_B = ParametricCPD("B", parametrization=linear_B, parents=["A"])
+    cpd_input = ParametricCPD(concept="input", parametrization=nn.Identity())
+    cpd_A = ParametricCPD(concept="A", parametrization=linear_A, parents=["input"])
+    cpd_B = ParametricCPD(concept="B", parametrization=linear_B, parents=["A"])
 
     pgm = ProbabilisticModel(
         variables=[input_var, var_A, var_B],
@@ -63,10 +63,10 @@ def _build_exogenous_pgm():
     linear_A = nn.Linear(4 + 2, 1)  # input(4) + exog(2) -> 1
     linear_B = LinearConceptToConcept(1, 1)
 
-    cpd_input = ParametricCPD("input", parametrization=nn.Identity())
-    cpd_exog = ParametricCPD("exog", parametrization=linear_exog)
-    cpd_A = ParametricCPD("A", parametrization=linear_A, parents=["input", "exog"])
-    cpd_B = ParametricCPD("B", parametrization=linear_B, parents=["A"])
+    cpd_input = ParametricCPD(concept="input", parametrization=nn.Identity())
+    cpd_exog = ParametricCPD(concept="exog", parametrization=linear_exog)
+    cpd_A = ParametricCPD(concept="A", parametrization=linear_A, parents=["input", "exog"])
+    cpd_B = ParametricCPD(concept="B", parametrization=linear_B, parents=["A"])
 
     pgm = ProbabilisticModel(
         variables=[input_var, exog_var, var_A, var_B],

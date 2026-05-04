@@ -123,63 +123,29 @@ class AncestralSamplingInference(ForwardInference):
                     )
                 }
 
-    def activate(self, pred: torch.Tensor, variable: Variable) -> torch.Tensor:
+    def activate(self, pred, variable: Variable) -> torch.Tensor:
         """
         Sample from the distribution parameterized by the raw CPD output.
 
-        The method introspects the distribution's constructor to decide how
-        to pass ``pred`` (as ``logits``, ``probs``, or positional arg) and
-        uses ``has_rsample`` to choose between ``.rsample()`` and
-        ``.sample()``.
+        Builds a Pyro distribution via ``variable.make_distribution`` and
+        draws a sample (``rsample`` if available, else ``sample``).
 
-        Distribution kwargs are read from ``variable.dist_kwargs``.
+        Delegates to :meth:`_ProbabilisticModelBase._propagate_raw` (the
+        single source of truth for the per-variable activation step shared
+        with the Pyro generative model — see notebook design note 13.1).
 
         Args:
-            pred: Raw output tensor from the CPD (logits or parameters).
+            pred: Raw output from the CPD (tensor, or per-parameter dict).
             variable: The variable being computed (defines distribution type
                 and per-variable ``dist_kwargs``).
 
         Returns:
             torch.Tensor: Sampled values from the distribution.
         """
-        allowed = self._dist_allowed_params.get(variable.distribution)
-        if allowed is None:
-            # Fallback for dynamically added distributions
-            sig = inspect.signature(variable.distribution.__init__)
-            allowed = {
-                name for name, p in sig.parameters.items()
-                if name != "self" and p.kind in (
-                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                    inspect.Parameter.KEYWORD_ONLY,
-                )
-            }
-            self._dist_allowed_params[variable.distribution] = allowed
-
-        # retain only allowed dist kwargs
-        dist_kwargs = {k: v for k, v in variable.dist_kwargs.items() if k in allowed}
-        dropped = set(variable.dist_kwargs) - set(dist_kwargs)
-        if dropped:
-            import warnings
-            warnings.warn(
-                f"Variable '{variable.concept}': dist_kwargs {dropped} are not "
-                f"accepted by {variable.distribution.__name__} and were ignored.",
-                stacklevel=2,
-            )
-
-        # Decide how to pass pred based on the distribution's accepted params
-        if "logits" in allowed and self.log_probs:
-            dist_kwargs["logits"] = pred
-            dist = variable.distribution(**dist_kwargs)
-        elif "probs" in allowed and not self.log_probs:
-            dist_kwargs["probs"] = pred
-            dist = variable.distribution(**dist_kwargs)
-        else:
-            dist = variable.distribution(pred, **dist_kwargs)
-
-        sample = dist.rsample() if dist.has_rsample else dist.sample()
-        if sample.dim() == 1:
-            sample = sample.unsqueeze(-1)
-        return sample
+        from ..models.probabilistic_model import _ProbabilisticModelBase
+        return _ProbabilisticModelBase._propagate_raw(
+            variable, pred, mode='ancestral',
+        )
 
     # TODO: currently assumes discrete, to be extended to continuous 
     def ground_truth_to_evidence(self, value: torch.Tensor, cardinality: int) -> torch.Tensor:

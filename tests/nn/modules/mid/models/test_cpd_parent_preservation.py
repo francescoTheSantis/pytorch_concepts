@@ -21,7 +21,7 @@ import torch.nn as nn
 from torch.distributions import Bernoulli, OneHotCategorical
 from torch_concepts.nn.modules.mid.models.variable import Variable
 from torch_concepts.nn.modules.mid.models.cpd import ParametricCPD
-from torch_concepts.nn.modules.mid.models.probabilistic_model import ProbabilisticModel
+from torch_concepts.nn.modules.mid.models.probabilistic_model import BayesianNetwork
 from torch_concepts.nn.modules.low.lazy import LazyConstructor
 
 
@@ -36,16 +36,16 @@ class TestCPDParentPreservation(unittest.TestCase):
         parent references.
         """
         # Create parent and child variables
-        parent = Variable(concepts='parent', distribution=Bernoulli, size=1)
-        child = Variable(concepts='child', distribution=Bernoulli, size=1)
+        parent = Variable(concept='parent', distribution=Bernoulli, size=1)
+        child = Variable(concept='child', distribution=Bernoulli, size=1)
         
         # Create CPDs with LazyConstructor
         parent_cpd = ParametricCPD(
-            concepts='parent',
+            concept='parent',
             parametrization=LazyConstructor(nn.Linear, out_features=1)
         )
         child_cpd = ParametricCPD(
-            concepts='child',
+            concept='child',
             parametrization=LazyConstructor(nn.Linear, out_features=1)
         , parents=[parent])
         
@@ -61,13 +61,13 @@ class TestCPDParentPreservation(unittest.TestCase):
         self.assertEqual(original_parents[0].concept, 'parent')
         
         # Create model (this will trigger lazy initialization)
-        model = ProbabilisticModel(
+        model = BayesianNetwork(
             variables=[parent, child],
             factors=[parent_cpd, child_cpd]
         )
         
         # Simulate what happens during forward pass: LazyConstructor.build() is called
-        # This happens in ProbabilisticModel when a lazy parametrization is detected
+        # This happens in BayesianNetwork when a lazy parametrization is detected
         
         # Get the child CPD from the model
         child_cpd_from_model = model.get_module_of_concept('child')
@@ -91,11 +91,11 @@ class TestCPDParentPreservation(unittest.TestCase):
     def test_cpd_variable_preserved_after_lazy_build(self):
         """Test that variable reference is preserved when LazyConstructor builds the CPD."""
         # Create variable
-        var = Variable(concepts='test_var', distribution=Bernoulli, size=1)
+        var = Variable(concept='test_var', distribution=Bernoulli, size=1)
         
         # Create CPD with LazyConstructor
         cpd = ParametricCPD(
-            concepts='test_var',
+            concept='test_var',
             parametrization=LazyConstructor(nn.Linear, out_features=1)
         )
         
@@ -108,7 +108,7 @@ class TestCPDParentPreservation(unittest.TestCase):
         self.assertEqual(original_variable.concept, 'test_var')
         
         # Create model
-        model = ProbabilisticModel(
+        model = BayesianNetwork(
             variables=[var],
             factors=[cpd]
         )
@@ -134,19 +134,19 @@ class TestCPDParentPreservation(unittest.TestCase):
     def test_multiple_parents_preserved(self):
         """Test that multiple parent references are all preserved."""
         # Create parent variables
-        parent1 = Variable(concepts='p1', distribution=Bernoulli, size=1)
-        parent2 = Variable(concepts='p2', distribution=Bernoulli, size=1)
-        parent3 = Variable(concepts='p3', distribution=Bernoulli, size=1)
-        child = Variable(concepts='child', distribution=Bernoulli, size=1)
+        parent1 = Variable(concept='p1', distribution=Bernoulli, size=1)
+        parent2 = Variable(concept='p2', distribution=Bernoulli, size=1)
+        parent3 = Variable(concept='p3', distribution=Bernoulli, size=1)
+        child = Variable(concept='child', distribution=Bernoulli, size=1)
         
         # Create CPDs
-        p1_cpd = ParametricCPD(concepts='p1', parametrization=LazyConstructor(nn.Linear, out_features=1))
-        p2_cpd = ParametricCPD(concepts='p2', parametrization=LazyConstructor(nn.Linear, out_features=1))
-        p3_cpd = ParametricCPD(concepts='p3', parametrization=LazyConstructor(nn.Linear, out_features=1))
-        child_cpd = ParametricCPD(concepts='child', parametrization=LazyConstructor(nn.Linear, out_features=1), parents=[parent1, parent2, parent3])
+        p1_cpd = ParametricCPD(concept='p1', parametrization=LazyConstructor(nn.Linear, out_features=1))
+        p2_cpd = ParametricCPD(concept='p2', parametrization=LazyConstructor(nn.Linear, out_features=1))
+        p3_cpd = ParametricCPD(concept='p3', parametrization=LazyConstructor(nn.Linear, out_features=1))
+        child_cpd = ParametricCPD(concept='child', parametrization=LazyConstructor(nn.Linear, out_features=1), parents=[parent1, parent2, parent3])
         
         # Create model
-        model = ProbabilisticModel(
+        model = BayesianNetwork(
             variables=[parent1, parent2, parent3, child],
             factors=[p1_cpd, p2_cpd, p3_cpd, child_cpd]
         )
@@ -178,16 +178,16 @@ class TestCPDParentPreservation(unittest.TestCase):
         Each CPD should maintain its parent references after lazy initialization.
         """
         # Create hierarchical variables
-        var_a = Variable(concepts='A', distribution=Bernoulli, size=1)
-        var_b = Variable(concepts='B', distribution=Bernoulli, size=1)
-        var_c = Variable(concepts='C', distribution=Bernoulli, size=1)
-        var_d = Variable(concepts='D', distribution=Bernoulli, size=1)
+        var_a = Variable(concept='A', distribution=Bernoulli, size=1)
+        var_b = Variable(concept='B', distribution=Bernoulli, size=1)
+        var_c = Variable(concept='C', distribution=Bernoulli, size=1)
+        var_d = Variable(concept='D', distribution=Bernoulli, size=1)
         
         # Create CPDs with lazy constructors
-        cpd_a = ParametricCPD(concepts='A', parametrization=LazyConstructor(nn.Linear, out_features=1))
-        cpd_b = ParametricCPD(concepts='B', parametrization=LazyConstructor(nn.Linear, out_features=1), parents=[var_a])
-        cpd_c = ParametricCPD(concepts='C', parametrization=LazyConstructor(nn.Linear, out_features=1), parents=[var_b])
-        cpd_d = ParametricCPD(concepts='D', parametrization=LazyConstructor(nn.Linear, out_features=1), parents=[var_c])
+        cpd_a = ParametricCPD(concept='A', parametrization=LazyConstructor(nn.Linear, out_features=1))
+        cpd_b = ParametricCPD(concept='B', parametrization=LazyConstructor(nn.Linear, out_features=1), parents=[var_a])
+        cpd_c = ParametricCPD(concept='C', parametrization=LazyConstructor(nn.Linear, out_features=1), parents=[var_b])
+        cpd_d = ParametricCPD(concept='D', parametrization=LazyConstructor(nn.Linear, out_features=1), parents=[var_c])
         
         # Set parents and variables
         cpd_a.parents = []
@@ -200,7 +200,7 @@ class TestCPDParentPreservation(unittest.TestCase):
         cpd_d.variable = var_d
         
         # Create model
-        model = ProbabilisticModel(
+        model = BayesianNetwork(
             variables=[var_a, var_b, var_c, var_d],
             factors=[cpd_a, cpd_b, cpd_c, cpd_d]
         )
@@ -237,16 +237,16 @@ class TestCPDParentPreservation(unittest.TestCase):
         calculations that depend on parent references.
         """
         # Create parent with higher cardinality
-        parent = Variable(concepts='parent', distribution=OneHotCategorical, size=5)
-        child = Variable(concepts='child', distribution=Bernoulli, size=1)
+        parent = Variable(concept='parent', distribution=OneHotCategorical, size=5)
+        child = Variable(concept='child', distribution=Bernoulli, size=1)
         
         # Create CPDs
         parent_cpd = ParametricCPD(
-            concepts='parent',
+            concept='parent',
             parametrization=LazyConstructor(nn.Linear, out_features=5)
         )
         child_cpd = ParametricCPD(
-            concepts='child',
+            concept='child',
             parametrization=LazyConstructor(nn.Linear, out_features=1)
         , parents=[parent])
         
@@ -257,7 +257,7 @@ class TestCPDParentPreservation(unittest.TestCase):
         child_cpd.variable = child
         
         # Create model
-        model = ProbabilisticModel(
+        model = BayesianNetwork(
             variables=[parent, child],
             factors=[parent_cpd, child_cpd]
         )
@@ -291,16 +291,16 @@ class TestCPDParentPreservation(unittest.TestCase):
         This is a control test to ensure the fix doesn't break non-lazy CPDs.
         """
         # Create variables
-        parent = Variable(concepts='parent', distribution=Bernoulli, size=1)
-        child = Variable(concepts='child', distribution=Bernoulli, size=1)
+        parent = Variable(concept='parent', distribution=Bernoulli, size=1)
+        child = Variable(concept='child', distribution=Bernoulli, size=1)
         
         # Create CPDs with non-lazy parametrization
         parent_cpd = ParametricCPD(
-            concepts='parent',
+            concept='parent',
             parametrization=nn.Linear(10, 1)
         )
         child_cpd = ParametricCPD(
-            concepts='child',
+            concept='child',
             parametrization=nn.Linear(1, 1)
         , parents=[parent])
         
@@ -311,7 +311,7 @@ class TestCPDParentPreservation(unittest.TestCase):
         child_cpd.variable = child
         
         # Create model
-        model = ProbabilisticModel(
+        model = BayesianNetwork(
             variables=[parent, child],
             factors=[parent_cpd, child_cpd]
         )
@@ -336,17 +336,17 @@ class TestCPDParentInFeatureCalculation(unittest.TestCase):
         This calculation depends on having correct parent references.
         """
         # Create parents with different sizes
-        parent1 = Variable(concepts='p1', distribution=OneHotCategorical, size=3)
-        parent2 = Variable(concepts='p2', distribution=OneHotCategorical, size=5)
-        child = Variable(concepts='child', distribution=Bernoulli, size=1)
+        parent1 = Variable(concept='p1', distribution=OneHotCategorical, size=3)
+        parent2 = Variable(concept='p2', distribution=OneHotCategorical, size=5)
+        child = Variable(concept='child', distribution=Bernoulli, size=1)
         
         # Create CPDs
-        p1_cpd = ParametricCPD(concepts='p1', parametrization=LazyConstructor(nn.Linear, out_features=3))
-        p2_cpd = ParametricCPD(concepts='p2', parametrization=LazyConstructor(nn.Linear, out_features=5))
-        child_cpd = ParametricCPD(concepts='child', parametrization=LazyConstructor(nn.Linear, out_features=1), parents=[parent1, parent2])
+        p1_cpd = ParametricCPD(concept='p1', parametrization=LazyConstructor(nn.Linear, out_features=3))
+        p2_cpd = ParametricCPD(concept='p2', parametrization=LazyConstructor(nn.Linear, out_features=5))
+        child_cpd = ParametricCPD(concept='child', parametrization=LazyConstructor(nn.Linear, out_features=1), parents=[parent1, parent2])
         
         # Create model
-        model = ProbabilisticModel(
+        model = BayesianNetwork(
             variables=[parent1, parent2, child],
             factors=[p1_cpd, p2_cpd, child_cpd]
         )
@@ -380,16 +380,16 @@ class TestCPDParentInFeatureCalculation(unittest.TestCase):
         that doesn't actually run a forward pass, just verifies parent preservation.
         """
         # Create simple parent-child structure
-        parent = Variable(concepts='parent', distribution=OneHotCategorical, size=4)
-        child = Variable(concepts='child', distribution=Bernoulli, size=1)
+        parent = Variable(concept='parent', distribution=OneHotCategorical, size=4)
+        child = Variable(concept='child', distribution=Bernoulli, size=1)
         
         # Create CPDs with lazy constructors
         parent_cpd = ParametricCPD(
-            concepts='parent',
+            concept='parent',
             parametrization=LazyConstructor(nn.Linear, out_features=4)
         )
         child_cpd = ParametricCPD(
-            concepts='child',
+            concept='child',
             parametrization=LazyConstructor(nn.Linear, out_features=1)
         , parents=[parent])
         
@@ -400,7 +400,7 @@ class TestCPDParentInFeatureCalculation(unittest.TestCase):
         child_cpd.variable = child
         
         # Create model
-        model = ProbabilisticModel(
+        model = BayesianNetwork(
             variables=[parent, child],
             factors=[parent_cpd, child_cpd]
         )

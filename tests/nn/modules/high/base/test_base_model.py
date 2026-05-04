@@ -115,7 +115,6 @@ class TestBaseModelInitialization:
         
         assert model.concept_names == ['c1', 'c2', 'task']
         assert model.concept_annotations.has_metadata('distribution')
-        assert model.concept_annotations.has_metadata('activation')
         meta = model.concept_annotations.metadata
         assert meta['c1']['distribution'] == RelaxedBernoulli
     
@@ -187,7 +186,6 @@ class TestBaseModelInitialization:
             annotations=annotations_without_distributions
         )
         assert model.concept_annotations.has_metadata('distribution')
-        assert model.concept_annotations.has_metadata('activation')
         meta = model.concept_annotations.metadata
         assert meta['c1']['distribution'] == RelaxedBernoulli
         assert meta['c2']['distribution'] == RelaxedBernoulli

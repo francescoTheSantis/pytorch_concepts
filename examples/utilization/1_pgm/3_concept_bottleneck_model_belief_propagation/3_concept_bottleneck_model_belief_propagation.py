@@ -43,18 +43,18 @@ def main():
     c = ConceptVariable("c", distribution=RelaxedBernoulli)
 
     # ParametricCPD setup
-    emb_cpd = ParametricCPD("emb", parents=[], parametrization=torch.nn.Identity())
-    a_cpd = ParametricCPD("a", parents=["emb"],
+    emb_cpd = ParametricCPD(concept="emb", parents=[], parametrization=torch.nn.Identity())
+    a_cpd = ParametricCPD(concept="a", parents=["emb"],
                                  parametrization=torch.nn.Sequential(torch.nn.Linear(emb.size, hidden_size),
                                                                      torch.nn.ReLU(),
                                                                      torch.nn.Linear(hidden_size, a.size),
                                                                      torch.nn.Sigmoid()))
-    b_cpd = ParametricCPD("b", parents=["emb"],
+    b_cpd = ParametricCPD(concept="b", parents=["emb"],
                                 parametrization=torch.nn.Sequential(torch.nn.Linear(emb.size, hidden_size),
                                                                      torch.nn.ReLU(),
                                                                      torch.nn.Linear(hidden_size, b.size),
                                                                      torch.nn.Softmax(dim=-1)))
-    c_cpd = ParametricCPD("c", parents=["a", "b"],
+    c_cpd = ParametricCPD(concept="c", parents=["a", "b"],
                             parametrization=torch.nn.Sequential(torch.nn.Linear(a.size + b.size, hidden_size),
                                                                 torch.nn.ReLU(),
                                                                 torch.nn.Linear(hidden_size, c.size),

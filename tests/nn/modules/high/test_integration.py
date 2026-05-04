@@ -62,7 +62,7 @@ class TestHighLevelIntegration(unittest.TestCase):
         # Forward pass
         x = torch.randn(8, 16)
         query = ['c1', 'c2', 'c3', 'task']
-        out = model(query=query, x=x, return_logits=True)
+        out = model(query=query, x=x, return_parameters=True)
         
         # Create targets matching output shape
         target = torch.cat([
@@ -109,7 +109,7 @@ class TestHighLevelIntegration(unittest.TestCase):
         ], dim=1).int()
         
         # Update metrics with model output
-        out = model(query=query, x=x, return_logits=True)
+        out = model(query=query, x=x, return_parameters=True)
         metrics.update(out.logits, target.int())
         
         # Compute metrics
@@ -153,7 +153,7 @@ class TestHighLevelIntegration(unittest.TestCase):
             optimizer.zero_grad()
             
             # Forward
-            out = model(query=query, x=x, return_logits=True)
+            out = model(query=query, x=x, return_parameters=True)
             
             # Loss
             out.target = target.float()
@@ -294,7 +294,7 @@ class TestTwoTrainingModes(unittest.TestCase):
         y = torch.randint(0, 2, (4, 3)).float()
         
         optimizer.zero_grad()
-        out = model(query=['c1', 'c2', 'task'], x=x, return_logits=True)
+        out = model(query=['c1', 'c2', 'task'], x=x, return_parameters=True)
         loss = loss_fn(out.logits, y)
         loss.backward()
         optimizer.step()

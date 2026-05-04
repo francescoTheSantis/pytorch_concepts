@@ -109,7 +109,7 @@ class TestDense(unittest.TestCase):
         activations = ['relu', 'tanh', 'sigmoid', 'linear']
 
         for act in activations:
-            layer = Dense(input_size=10, output_size=5, activation=act)
+            layer = Dense(input_size=10, output_size=5)
             x = torch.randn(2, 10)
             output = layer(x)
             self.assertEqual(output.shape, (2, 5))
@@ -181,7 +181,7 @@ class TestMLP(unittest.TestCase):
 
     def test_different_activation(self):
         """Test with different activation."""
-        mlp = MLP(input_size=10, hidden_size=64, n_layers=2, activation='tanh')
+        mlp = MLP(input_size=10, hidden_size=64, n_layers=2)
         x = torch.randn(2, 10)
         output = mlp(x)
         self.assertEqual(output.shape, (2, 64))
@@ -253,7 +253,7 @@ class TestResidualMLP(unittest.TestCase):
 
     def test_different_activation(self):
         """Test with different activation."""
-        mlp = ResidualMLP(input_size=64, hidden_size=64, n_layers=2, activation='tanh')
+        mlp = ResidualMLP(input_size=64, hidden_size=64, n_layers=2)
         x = torch.randn(2, 64)
         output = mlp(x)
         self.assertEqual(output.shape, (2, 64))

@@ -85,7 +85,7 @@ def main():
     for name in all_names:
         meta = axis_ann.metadata[name]
         print(f"  {name}: distribution={meta['distribution'].__name__}, "
-              f"activation={meta['activation'].__name__}")
+              f")
 
     # Init model
     print("\n" + "=" * 60)

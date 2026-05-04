@@ -438,7 +438,7 @@ class TestGetInferenceKwargs(unittest.TestCase):
         self.assertIn('ground_truth', result)
         self.assertTrue(torch.equal(result['ground_truth'], c))
         self.assertEqual(result['concept_names'], self.annotations.get_axis_annotation(1).labels)
-        self.assertTrue(result['return_logits'])
+        self.assertTrue(result['return_parameters'])
 
 
 # ======================================================================

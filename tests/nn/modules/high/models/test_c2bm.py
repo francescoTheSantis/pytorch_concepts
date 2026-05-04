@@ -380,12 +380,12 @@ class TestC2BMReturnLogits:
         self.x = torch.randn(4, 8)
 
     def test_return_logits_shape(self):
-        out = self.model(query=['A', 'B', 'C'], x=self.x, return_logits=True)
+        out = self.model(query=['A', 'B', 'C'], x=self.x, return_parameters=True)
         assert out.logits.shape == (4, 3)
 
     def test_return_logits_vs_activated(self):
         """With return_logits the output is *not* squeezed through sigmoid."""
-        out = self.model(query=['A'], x=self.x, return_logits=False)
+        out = self.model(query=['A'], x=self.x, return_parameters=False)
         # Logits can be outside [0, 1], probs are in [0, 1]
         assert out.probs.min() >= 0.0
         assert out.probs.max() <= 1.0
@@ -417,7 +417,7 @@ class TestC2BMGradients:
             graph=chain_graph,
         )
         x = torch.randn(4, 8, requires_grad=True)
-        out = model(query=['A', 'B', 'C'], x=x, return_logits=True)
+        out = model(query=['A', 'B', 'C'], x=x, return_parameters=True)
         out.logits.sum().backward()
         assert x.grad is not None
 
@@ -457,7 +457,7 @@ class TestC2BMManualTraining:
         x = torch.randn(4, 8)
         y = torch.randint(0, 2, (4, 3)).float()
 
-        out = model(query=['A', 'B', 'C'], x=x, return_logits=True)
+        out = model(query=['A', 'B', 'C'], x=x, return_parameters=True)
         loss = loss_fn(out.logits, y)
         loss.backward()
         optimizer.step()
@@ -481,7 +481,7 @@ class TestC2BMManualTraining:
         losses = []
         for _ in range(30):
             optimizer.zero_grad()
-            out = model(query=['A', 'B', 'C'], x=x, return_logits=True)
+            out = model(query=['A', 'B', 'C'], x=x, return_parameters=True)
             loss = loss_fn(out.logits, y)
             loss.backward()
             optimizer.step()
@@ -527,7 +527,7 @@ class TestC2BMIndependentInference:
         out = self.model(
             query=['A', 'B', 'C'], x=self.x,
             ground_truth=self.gt, concept_names=['A', 'B', 'C'],
-            return_logits=True,
+            return_parameters=True,
         )
         assert out.logits.shape == (4, 3)
 

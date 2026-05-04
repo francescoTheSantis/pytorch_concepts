@@ -36,7 +36,7 @@ def build_pgm_shared(encoder, task_head):
     concept_vars = ConceptVariable(concept_names, distribution=Bernoulli)
     task_var = ConceptVariable("task", distribution=OneHotCategorical, size=n_classes)
 
-    cpd_input = ParametricCPD("input", parametrization=nn.Identity())
+    cpd_input = ParametricCPD(concept="input", parametrization=nn.Identity())
     cpd_concepts = ParametricCPD(
         concept_names,
         parametrization=encoder,
@@ -44,8 +44,7 @@ def build_pgm_shared(encoder, task_head):
         shared=True,
         shared_name='shared'
     )
-    cpd_task = ParametricCPD(
-        "task",
+    cpd_task = ParametricCPD(concept="task",
         parametrization=task_head,
         parents=concept_names,
     )
@@ -66,7 +65,7 @@ def build_pgm_single(encoder, task_head):
     concept_vars = ConceptVariable(concept_names, distribution=Bernoulli)
     task_var = ConceptVariable("task", distribution=OneHotCategorical, size=n_classes)
 
-    cpd_input = ParametricCPD("input", parametrization=nn.Identity())
+    cpd_input = ParametricCPD(concept="input", parametrization=nn.Identity())
 
     concept_cpds = []
     for i, name in enumerate(concept_names):
@@ -79,8 +78,7 @@ def build_pgm_single(encoder, task_head):
             ParametricCPD(name, parametrization=single_enc, parents=["input"])
         )
 
-    cpd_task = ParametricCPD(
-        "task",
+    cpd_task = ParametricCPD(concept="task",
         parametrization=task_head,
         parents=concept_names,
     )

@@ -93,3 +93,6 @@ outputs/
 conceptarium/visualize.py
 conceptarium/run_analysis.py
 conceptarium/conf/benchmark.yaml
+
+# temporary documentation
+library_summaries/

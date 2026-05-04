@@ -32,9 +32,9 @@ def main():
                             dist_kwargs={'temperature': 1})
 
     # ParametricCPD setup
-    backbone = ParametricCPD("input", parametrization=torch.nn.Identity())
-    c_encoder = ParametricCPD(["c1", "c2"], parametrization=LazyConstructor(LinearLatentToConcept), parents=["input"])
-    y_predictor = ParametricCPD("xor", parametrization=LazyConstructor(LinearConceptToConcept), parents=["c1", "c2"])
+    backbone = ParametricCPD(concept="input", parametrization=torch.nn.Identity())
+    c_encoder = ParametricCPD(concepts=["c1", "c2"], parametrization=LazyConstructor(LinearLatentToConcept), parents=["input"])
+    y_predictor = ParametricCPD(concept="xor", parametrization=LazyConstructor(LinearConceptToConcept), parents=["c1", "c2"])
 
     # ProbabilisticModel Initialization
     concept_model = ProbabilisticModel(variables=[input_var, *concepts, tasks], factors=[backbone, *c_encoder, y_predictor])

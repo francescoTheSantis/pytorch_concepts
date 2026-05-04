@@ -3,6 +3,7 @@ from abc import abstractmethod, ABC
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 import torch
+import torch.nn as nn
 
 from ..models.variable import Variable, ConceptVariable
 from ...low.base.graph import BaseGraphLearner
@@ -162,7 +163,7 @@ class ForwardInference(BaseInference, ABC):
         semantics.  The activated value is:
 
         * propagated to child predictors (they receive already-activated inputs)
-        * returned as the query output (unless ``return_logits=True``)
+        * returned as the query output (unless ``return_parameters=True``)
 
         Subclass contracts:
 
@@ -509,6 +510,10 @@ class ForwardInference(BaseInference, ABC):
         """
         if isinstance(parametric_cpd.parametrization, (_InterventionWrapper, _GlobalPolicyInterventionWrapper)):
             forward_to_check = parametric_cpd.parametrization.forward_to_check
+        elif isinstance(parametric_cpd.parametrization, nn.ModuleDict):
+            # Dict-form: inspect the first sub-module (all share the same input signature)
+            first_mod = next(iter(parametric_cpd.parametrization.values()))
+            forward_to_check = first_mod.forward
         else:
             forward_to_check = parametric_cpd.parametrization.forward
 
@@ -680,7 +685,7 @@ class ForwardInference(BaseInference, ABC):
         concept_names: List[str] = None,
         debug: bool = False, 
         device: str = 'auto',
-        return_logits: bool = False,
+        return_parameters: bool = False,
         return_probs: bool = True,
         **kwargs
     ) -> InferenceOutput:
@@ -710,7 +715,7 @@ class ForwardInference(BaseInference, ABC):
                 - 'auto' (default): Automatically detect and use CUDA if available, else CPU
                 - 'cuda' or 'gpu': Force use of CUDA (will raise error if not available)
                 - 'cpu': Force use of CPU even if CUDA is available
-            return_logits: If True, populate ``InferenceOutput.logits`` with
+            return_parameters: If True, populate ``InferenceOutput.parameters`` with
                 raw CPD outputs (before activation). Useful for losses that require logits.
             return_probs: If True (default), populate ``InferenceOutput.probs``
                 with activated predictions.
@@ -718,7 +723,7 @@ class ForwardInference(BaseInference, ABC):
 
         Returns:
             InferenceOutput:
-                Structured output with ``.logits``, ``.probs``, and/or ``.joint``
+                Structured output with ``.parameters``, ``.probs``, and/or ``.joint``
                 populated according to the ``return_*`` flags.
 
         Raises:
@@ -753,7 +758,7 @@ class ForwardInference(BaseInference, ABC):
         # Separate dicts for logits and probs return values.
         # propagation always holds activated (and possibly detached / GT-mixed)
         # values used as input to children.
-        returned_logits: Dict[str, torch.Tensor] | None = {} if return_logits else None
+        returned_parameters: Dict[str, torch.Tensor] | None = {} if return_parameters else None
         returned_probs: Dict[str, torch.Tensor] | None = {} if return_probs else None
         propagation: Dict[str, torch.Tensor] = dict(evidence)
         query_set = set(query)
@@ -772,8 +777,10 @@ class ForwardInference(BaseInference, ABC):
 
                     # Store for return (only queried concepts)
                     if name in query_set:
-                        if returned_logits is not None:
-                            returned_logits[name] = pred
+                        if returned_parameters is not None:
+                            param_value = (torch.cat(list(pred.values()), dim=-1)
+                                           if isinstance(pred, dict) else pred)
+                            returned_parameters[name] = param_value
                         if returned_probs is not None:
                             returned_probs[name] = activated
                         computed_queries.add(name)
@@ -798,23 +805,25 @@ class ForwardInference(BaseInference, ABC):
                     else:
                         propagation[name] = activated.detach() if self.detach else activated
                 else:
+                    # Non-concept variable: take distribution mean
+                    pred_t = variable.make_distribution(pred).mean if variable is not None else pred
                     if name in query_set:
-                        if returned_logits is not None:
-                            returned_logits[name] = pred
+                        if returned_parameters is not None:
+                            returned_parameters[name] = pred_t
                         if returned_probs is not None:
-                            returned_probs[name] = pred
+                            returned_probs[name] = pred_t
                         computed_queries.add(name)
-                    propagation[name] = pred
+                    propagation[name] = pred_t
 
             # Early exit: stop if all queried variables have been computed
             if computed_queries >= query_set:
                 break
 
-        logits_tensor = self._concatenate_results(query, returned_logits) if returned_logits is not None else None
+        parameters_tensor = self._concatenate_results(query, returned_parameters) if returned_parameters is not None else None
         probs_tensor = self._concatenate_results(query, returned_probs) if returned_probs is not None else None
 
         return InferenceOutput(
-            logits=logits_tensor,
+            parameters=parameters_tensor,
             probs=probs_tensor,
             joint=None,
         )

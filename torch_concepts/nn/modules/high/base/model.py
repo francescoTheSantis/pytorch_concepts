@@ -437,7 +437,7 @@ class BaseModel(nn.Module, ABC):
         )
         
         return ModelOutput(
-            logits=result.logits,
+            logits=result.parameters,
             probs=result.probs,
             joint=result.joint,
         )

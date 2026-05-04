@@ -43,7 +43,7 @@ def _set_submodule(model: nn.Module, dotted: str, new: nn.Module) -> None:
     if isinstance(new, ParametricCPD):
         setattr(parent, name, new)
     else:
-        setattr(parent, name, ParametricCPD(concepts=dotted, parametrization=new))
+        setattr(parent, name, ParametricCPD(concept=dotted, parametrization=new))
 
 def _as_list(x, n: int):
     # broadcast a singleton to length n; if already a list/tuple, validate length

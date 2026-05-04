@@ -4,6 +4,9 @@ import torch
 
 from .forward import ForwardInference
 from ..models.variable import Variable
+from torch.distributions import (
+    Bernoulli, RelaxedBernoulli, OneHotCategorical, RelaxedOneHotCategorical,
+)
 
 
 class DeterministicInference(ForwardInference):
@@ -66,23 +69,29 @@ class DeterministicInference(ForwardInference):
         >>> pred_A = (prob_A > 0.5).float()
         >>> print(pred_A)  # Binary predictions
     """
-    def activate(self, pred: torch.Tensor, variable: Variable) -> torch.Tensor:
+    def activate(self, pred, variable: Variable) -> torch.Tensor:
         """
-        Map logits to probabilities using the variable's activation.
+        Map raw CPD output to probabilities (or mean) for downstream propagation.
 
-        The activation function is stored on the :class:`Variable` instance
-        (defaulting to sigmoid for Bernoulli, softmax for Categorical,
-        identity for Delta, etc.).  Custom activations can be provided when
-        constructing the variable.
+        Maps logits/parameters to the appropriate point estimate
+        (sigmoid for Bernoulli/RelaxedBernoulli, softmax for Categorical
+        variants, mean/identity for Normal/Delta).
+
+        Delegates to :meth:`_ProbabilisticModelBase._propagate_raw` (the
+        single source of truth for the per-variable activation step shared
+        with the Pyro generative model — see notebook design note 13.1).
 
         Args:
-            pred: Prediction tensor (logits).
+            pred: Raw CPD output (tensor or dict of parameter tensors).
             variable: The Variable whose prediction is being propagated.
 
         Returns:
-            torch.Tensor: Probability tensor.
+            torch.Tensor: Probability / mean tensor.
         """
-        return variable.activation(pred)
+        from ..models.probabilistic_model import _ProbabilisticModelBase
+        return _ProbabilisticModelBase._propagate_raw(
+            variable, pred, mode='deterministic',
+        )
 
     def ground_truth_to_evidence(self, value: torch.Tensor, cardinality: int) -> torch.Tensor:
         """

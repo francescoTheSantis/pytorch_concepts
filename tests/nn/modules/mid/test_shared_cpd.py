@@ -43,14 +43,13 @@ def _make_task_head():
 def _build_shared_pgm(encoder, task_head):
     """PGM with a single shared CPD for all concepts."""
     input_var = LatentVariable("input", distribution=Delta, size=LATENT_DIM)
-    concept_vars = ConceptVariable(CONCEPT_NAMES, distribution=Bernoulli)
+    concept_vars = ConceptVariable(concepts=CONCEPT_NAMES, distribution=Bernoulli)
     task_var = ConceptVariable("task", distribution=OneHotCategorical, size=N_CLASSES)
 
-    cpd_input = ParametricCPD("input", parametrization=nn.Identity())
-    cpd_concepts = ParametricCPD(
-        CONCEPT_NAMES, parametrization=encoder, parents=["input"], shared=True,
+    cpd_input = ParametricCPD(concept="input", parametrization=nn.Identity())
+    cpd_concepts = ParametricCPD(concepts=CONCEPT_NAMES, parametrization=encoder, parents=["input"], shared=True,
     )
-    cpd_task = ParametricCPD("task", parametrization=task_head, parents=CONCEPT_NAMES)
+    cpd_task = ParametricCPD(concept="task", parametrization=task_head, parents=CONCEPT_NAMES)
 
     return ProbabilisticModel(
         variables=[input_var] + concept_vars + [task_var],
@@ -64,10 +63,10 @@ def _build_single_pgm(encoder, task_head):
     Copies weights row-by-row from the shared encoder so outputs match.
     """
     input_var = LatentVariable("input", distribution=Delta, size=LATENT_DIM)
-    concept_vars = ConceptVariable(CONCEPT_NAMES, distribution=Bernoulli)
+    concept_vars = ConceptVariable(concepts=CONCEPT_NAMES, distribution=Bernoulli)
     task_var = ConceptVariable("task", distribution=OneHotCategorical, size=N_CLASSES)
 
-    cpd_input = ParametricCPD("input", parametrization=nn.Identity())
+    cpd_input = ParametricCPD(concept="input", parametrization=nn.Identity())
 
     concept_cpds = []
     for i, name in enumerate(CONCEPT_NAMES):
@@ -76,10 +75,10 @@ def _build_single_pgm(encoder, task_head):
             single_enc.encoder.weight.copy_(encoder.encoder.weight[i : i + 1])
             single_enc.encoder.bias.copy_(encoder.encoder.bias[i : i + 1])
         concept_cpds.append(
-            ParametricCPD(name, parametrization=single_enc, parents=["input"])
+            ParametricCPD(concept=name, parametrization=single_enc, parents=["input"])
         )
 
-    cpd_task = ParametricCPD("task", parametrization=task_head, parents=CONCEPT_NAMES)
+    cpd_task = ParametricCPD(concept="task", parametrization=task_head, parents=CONCEPT_NAMES)
 
     return ProbabilisticModel(
         variables=[input_var] + concept_vars + [task_var],
@@ -95,39 +94,34 @@ class TestParametricCPDSharedConstruction:
     """Test ParametricCPD with shared=True construction semantics."""
 
     def test_shared_returns_single_instance(self):
-        cpd = ParametricCPD(
-            CONCEPT_NAMES, parametrization=nn.Linear(8, 5),
+        cpd = ParametricCPD(concepts=CONCEPT_NAMES, parametrization=nn.Linear(8, 5),
             parents=["input"], shared=True,
         )
         assert isinstance(cpd, ParametricCPD)
         assert not isinstance(cpd, list)
 
     def test_shared_false_returns_list(self):
-        cpds = ParametricCPD(
-            CONCEPT_NAMES, parametrization=nn.Linear(8, 5),
+        cpds = ParametricCPD(concepts=CONCEPT_NAMES, parametrization=nn.Linear(8, 5),
             parents=["input"], shared=False,
         )
         assert isinstance(cpds, list)
         assert len(cpds) == N_CONCEPTS
 
     def test_shared_stores_all_concepts(self):
-        cpd = ParametricCPD(
-            CONCEPT_NAMES, parametrization=nn.Linear(8, 5),
+        cpd = ParametricCPD(concepts=CONCEPT_NAMES, parametrization=nn.Linear(8, 5),
             parents=["input"], shared=True,
         )
         assert cpd.concepts == CONCEPT_NAMES
         assert cpd.concept == CONCEPT_NAMES[0]
 
     def test_shared_flag_stored(self):
-        cpd = ParametricCPD(
-            CONCEPT_NAMES, parametrization=nn.Linear(8, 5),
+        cpd = ParametricCPD(concepts=CONCEPT_NAMES, parametrization=nn.Linear(8, 5),
             parents=["input"], shared=True,
         )
         assert cpd.shared is True
 
     def test_non_shared_flag_stored(self):
-        cpds = ParametricCPD(
-            CONCEPT_NAMES, parametrization=nn.Linear(8, 5),
+        cpds = ParametricCPD(concepts=CONCEPT_NAMES, parametrization=nn.Linear(8, 5),
             parents=["input"], shared=False,
         )
         for c in cpds:
@@ -136,8 +130,7 @@ class TestParametricCPDSharedConstruction:
     def test_shared_no_deepcopy(self):
         """Shared CPD should reference the original module, not a copy."""
         module = nn.Linear(8, 5)
-        cpd = ParametricCPD(
-            CONCEPT_NAMES, parametrization=module,
+        cpd = ParametricCPD(concepts=CONCEPT_NAMES, parametrization=module,
             parents=["input"], shared=True,
         )
         assert cpd.parametrization is module
@@ -145,8 +138,7 @@ class TestParametricCPDSharedConstruction:
     def test_non_shared_deepcopies(self):
         """Non-shared CPDs should each have their own copy."""
         module = nn.Linear(8, 5)
-        cpds = ParametricCPD(
-            CONCEPT_NAMES, parametrization=module,
+        cpds = ParametricCPD(concepts=CONCEPT_NAMES, parametrization=module,
             parents=["input"], shared=False,
         )
         ids = {id(c.parametrization) for c in cpds}
@@ -154,16 +146,14 @@ class TestParametricCPDSharedConstruction:
 
     def test_shared_rejects_module_list(self):
         with pytest.raises(ValueError, match="single module"):
-            ParametricCPD(
-                CONCEPT_NAMES,
+            ParametricCPD(concepts=CONCEPT_NAMES,
                 parametrization=[nn.Linear(8, 1) for _ in CONCEPT_NAMES],
                 parents=["input"],
                 shared=True,
             )
 
     def test_shared_preserves_parents(self):
-        cpd = ParametricCPD(
-            CONCEPT_NAMES, parametrization=nn.Linear(8, 5),
+        cpd = ParametricCPD(concepts=CONCEPT_NAMES, parametrization=nn.Linear(8, 5),
             parents=["input", "extra"], shared=True,
         )
         parent_names = [p if isinstance(p, str) else p.concept for p in cpd.parents]
@@ -318,19 +308,17 @@ class TestMixedSharedAndIndividualCPDs:
         all_names = shared_names + indiv_names
 
         input_var = LatentVariable("input", distribution=Delta, size=8)
-        shared_vars = ConceptVariable(shared_names, distribution=Bernoulli)
-        indiv_vars = ConceptVariable(indiv_names, distribution=Bernoulli)
+        shared_vars = ConceptVariable(concepts=shared_names, distribution=Bernoulli)
+        indiv_vars = ConceptVariable(concepts=indiv_names, distribution=Bernoulli)
         task_var = ConceptVariable("task", distribution=OneHotCategorical, size=3)
 
-        cpd_input = ParametricCPD("input", parametrization=nn.Identity())
-        cpd_shared = ParametricCPD(
-            shared_names, parametrization=LinearLatentToConcept(8, 3),
+        cpd_input = ParametricCPD(concept="input", parametrization=nn.Identity())
+        cpd_shared = ParametricCPD(concepts=shared_names, parametrization=LinearLatentToConcept(8, 3),
             parents=["input"], shared=True,
         )
-        cpd_a = ParametricCPD("a", parametrization=LinearLatentToConcept(8, 1), parents=["input"])
-        cpd_b = ParametricCPD("b", parametrization=LinearLatentToConcept(8, 1), parents=["input"])
-        cpd_task = ParametricCPD(
-            "task", parametrization=LinearConceptToConcept(5, 3), parents=all_names,
+        cpd_a = ParametricCPD(concept="a", parametrization=LinearLatentToConcept(8, 1), parents=["input"])
+        cpd_b = ParametricCPD(concept="b", parametrization=LinearLatentToConcept(8, 1), parents=["input"])
+        cpd_task = ParametricCPD(concept="task", parametrization=LinearConceptToConcept(5, 3), parents=all_names,
         )
 
         pgm = ProbabilisticModel(
@@ -453,21 +441,18 @@ class TestMultipleSharedGroups:
         all_concepts = group_a + group_b
 
         input_var = LatentVariable("input", distribution=Delta, size=8)
-        vars_a = ConceptVariable(group_a, distribution=Bernoulli)
-        vars_b = ConceptVariable(group_b, distribution=Bernoulli)
+        vars_a = ConceptVariable(concepts=group_a, distribution=Bernoulli)
+        vars_b = ConceptVariable(concepts=group_b, distribution=Bernoulli)
         task_var = ConceptVariable("task", distribution=OneHotCategorical, size=3)
 
-        cpd_input = ParametricCPD("input", parametrization=nn.Identity())
-        cpd_a = ParametricCPD(
-            group_a, parametrization=LinearLatentToConcept(8, 3),
+        cpd_input = ParametricCPD(concept="input", parametrization=nn.Identity())
+        cpd_a = ParametricCPD(concepts=group_a, parametrization=LinearLatentToConcept(8, 3),
             parents=["input"], shared=True,
         )
-        cpd_b = ParametricCPD(
-            group_b, parametrization=LinearLatentToConcept(8, 2),
+        cpd_b = ParametricCPD(concepts=group_b, parametrization=LinearLatentToConcept(8, 2),
             parents=["input"], shared=True,
         )
-        cpd_task = ParametricCPD(
-            "task", parametrization=LinearConceptToConcept(5, 3), parents=all_concepts,
+        cpd_task = ParametricCPD(concept="task", parametrization=LinearConceptToConcept(5, 3), parents=all_concepts,
         )
 
         pgm = ProbabilisticModel(
@@ -516,16 +501,14 @@ class TestSharedCPDCategoricalConcepts:
         torch.manual_seed(77)
         names = ["color", "shape"]  # each has 3 classes
         input_var = LatentVariable("input", distribution=Delta, size=8)
-        concept_vars = ConceptVariable(names, distribution=OneHotCategorical, size=3)
+        concept_vars = ConceptVariable(concepts=names, distribution=OneHotCategorical, size=3)
         task_var = ConceptVariable("task", distribution=OneHotCategorical, size=2)
 
         encoder = nn.Linear(8, 6)  # 3 + 3 = 6
-        cpd_input = ParametricCPD("input", parametrization=nn.Identity())
-        cpd_concepts = ParametricCPD(
-            names, parametrization=encoder, parents=["input"], shared=True,
+        cpd_input = ParametricCPD(concept="input", parametrization=nn.Identity())
+        cpd_concepts = ParametricCPD(concepts=names, parametrization=encoder, parents=["input"], shared=True,
         )
-        cpd_task = ParametricCPD(
-            "task", parametrization=LinearConceptToConcept(6, 2), parents=names,
+        cpd_task = ParametricCPD(concept="task", parametrization=LinearConceptToConcept(6, 2), parents=names,
         )
 
         pgm = ProbabilisticModel(
@@ -584,8 +567,7 @@ class TestSharedCPDEdgeCases:
 
     def test_single_concept_shared_true(self):
         """shared=True with a single-element list should work like shared=False."""
-        cpd = ParametricCPD(
-            ["only"], parametrization=nn.Linear(8, 1),
+        cpd = ParametricCPD(concepts=["only"], parametrization=nn.Linear(8, 1),
             parents=["input"], shared=True,
         )
         assert isinstance(cpd, ParametricCPD)
@@ -595,10 +577,9 @@ class TestSharedCPDEdgeCases:
     def test_single_concept_shared_in_pgm(self):
         """A single-concept shared CPD in a full PGM."""
         input_var = LatentVariable("input", distribution=Delta, size=8)
-        concept_var = ConceptVariable(["x"], distribution=Bernoulli)
-        cpd_input = ParametricCPD("input", parametrization=nn.Identity())
-        cpd_x = ParametricCPD(
-            ["x"], parametrization=nn.Linear(8, 1), parents=["input"], shared=True,
+        concept_var = ConceptVariable(concepts=["x"], distribution=Bernoulli)
+        cpd_input = ParametricCPD(concept="input", parametrization=nn.Identity())
+        cpd_x = ParametricCPD(concepts=["x"], parametrization=nn.Linear(8, 1), parents=["input"], shared=True,
         )
         pgm = ProbabilisticModel(
             variables=[input_var] + concept_var,
@@ -610,13 +591,12 @@ class TestSharedCPDEdgeCases:
 
     def test_integer_concept_names(self):
         """Shared CPD with integer concept names (requires str() conversion)."""
-        names = [0, 1, 2]
+        names = ["0", "1", "2"]
         input_var = LatentVariable("input", distribution=Delta, size=4)
-        concept_vars = ConceptVariable(names, distribution=Bernoulli)
+        concept_vars = ConceptVariable(concepts=names, distribution=Bernoulli)
 
-        cpd_input = ParametricCPD("input", parametrization=nn.Identity())
-        cpd = ParametricCPD(
-            names, parametrization=nn.Linear(4, 3), parents=["input"], shared=True,
+        cpd_input = ParametricCPD(concept="input", parametrization=nn.Identity())
+        cpd = ParametricCPD(concepts=names, parametrization=nn.Linear(4, 3), parents=["input"], shared=True,
         )
 
         pgm = ProbabilisticModel(

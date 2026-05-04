@@ -30,9 +30,9 @@ def main():
     tasks = ConceptVariable("xor", distribution=RelaxedOneHotCategorical, size=2)
 
     # ParametricCPD setup
-    backbone = ParametricCPD("input", parametrization=torch.nn.Sequential(torch.nn.Linear(x_train.shape[1], latent_dims), torch.nn.LeakyReLU()))
-    c_encoder = ParametricCPD(["c1", "c2"], parametrization=LazyConstructor(LinearLatentToConcept), parents=["input"])
-    y_predictor = ParametricCPD("xor", parametrization=LinearConceptToConcept(in_concepts=2, out_concepts=2), parents=["c1", "c2"])
+    backbone = ParametricCPD(concept="input", parametrization=torch.nn.Sequential(torch.nn.Linear(x_train.shape[1], latent_dims), torch.nn.LeakyReLU()))
+    c_encoder = ParametricCPD(concepts=["c1", "c2"], parametrization=LazyConstructor(LinearLatentToConcept), parents=["input"])
+    y_predictor = ParametricCPD(concept="xor", parametrization=LinearConceptToConcept(in_concepts=2, out_concepts=2), parents=["c1", "c2"])
 
     # ProbabilisticModel Initialization
     concept_model = ProbabilisticModel(variables=[input_var, *concepts, tasks], factors=[backbone, *c_encoder, y_predictor])

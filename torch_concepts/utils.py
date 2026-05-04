@@ -405,10 +405,6 @@ def add_default_properties(
     the concept's type group (binary/categorical/continuous) using
     :data:`~torch_concepts.nn.modules.mid.models.variable._DEFAULT_DISTRIBUTIONS`.
 
-    For each concept missing an ``'activation'`` (but having a ``'distribution'``),
-    assigns a default using
-    :data:`~torch_concepts.nn.modules.mid.models.variable._DEFAULT_ACTIVATIONS`.
-
     If no default can be determined for a concept, a ``ValueError`` is raised
     asking the user to add the property to the annotation object explicitly
     (e.g. via :func:`add_property_to_annotations`).
@@ -420,10 +416,10 @@ def add_default_properties(
         Updated annotations with defaults filled in.
 
     Raises:
-        ValueError: If a concept is missing a distribution or activation and
-            no default exists for its type group / distribution class.
+        ValueError: If a concept is missing a distribution and no default exists
+            for its type group.
     """
-    from .nn.modules.mid.models.variable import _DEFAULT_DISTRIBUTIONS, _DEFAULT_ACTIVATIONS, _DEFAULT_DIST_KWARGS
+    from .nn.modules.mid.models.variable import _DEFAULT_DISTRIBUTIONS, _DEFAULT_DIST_KWARGS
 
     if isinstance(annotations, Annotations):
         axis_annotation = annotations.get_axis_annotation(1)
@@ -452,19 +448,8 @@ def add_default_properties(
                 )
 
     # --- Default activations ---
-    for label in axis_annotation.labels:
-        meta = axis_annotation.metadata[label]
-        if 'activation' not in meta:
-            dist = meta.get('distribution')
-            if dist is not None and dist in _DEFAULT_ACTIVATIONS:
-                meta['activation'] = _DEFAULT_ACTIVATIONS[dist]
-            elif dist is not None:
-                raise ValueError(
-                    f"No default activation for distribution "
-                    f"{dist.__name__} of concept '{label}'. "
-                    f"Please add an 'activation' to the annotation metadata, "
-                    f"e.g. via add_property_to_annotations()."
-                )
+    # (removed: activation handling has been removed from the API; CPDs use
+    # ``Variable.make_distribution(...)`` to map raw outputs to probabilities.)
 
     if isinstance(annotations, Annotations):
         annotations[1] = axis_annotation

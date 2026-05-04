@@ -22,7 +22,7 @@ class TestVariable(unittest.TestCase):
     def test_single_concept_initialization(self):
         """Test creating a single concept variable."""
         var = Variable(
-            concepts='color',
+            concept='color',
             distribution=Bernoulli,
             size=1
         )
@@ -44,7 +44,7 @@ class TestVariable(unittest.TestCase):
     def test_variable_with_delta_distribution(self):
         """Test variable with Delta distribution."""
         var = Variable(
-            concepts='feature',
+            concept='feature',
             distribution=Delta,
             size=1
         )
@@ -53,7 +53,7 @@ class TestVariable(unittest.TestCase):
     def test_variable_with_categorical_distribution(self):
         """Test variable with OneHotCategorical distribution."""
         var = Variable(
-            concepts='color',
+            concept='color',
             distribution=OneHotCategorical,
             size=3
         )
@@ -62,17 +62,17 @@ class TestVariable(unittest.TestCase):
 
     def test_variable_out_features(self):
         """Test out_features property."""
-        var_binary = Variable(concepts='binary', distribution=Bernoulli, size=1)
+        var_binary = Variable(concept='binary', distribution=Bernoulli, size=1)
         self.assertEqual(var_binary.out_features, 1)
 
-        var_cat = Variable(concepts='category', distribution=OneHotCategorical, size=5)
+        var_cat = Variable(concept='category', distribution=OneHotCategorical, size=5)
         self.assertEqual(var_cat.out_features, 5)
 
     def test_variable_with_metadata(self):
         """Test variable with metadata."""
         metadata = {'description': 'test variable', 'importance': 0.8}
         var = Variable(
-            concepts='test',
+            concept='test',
             distribution=Bernoulli,
             size=1,
             metadata=metadata
@@ -175,7 +175,7 @@ class TestVariableValidation:
         """Test that Categorical always raises error (use OneHotCategorical)."""
         with pytest.raises(ValueError, match="Use OneHotCategorical"):
             Variable(
-                concepts='cat',
+                concept='cat',
                 distribution=Categorical,
                 size=3
             )
@@ -184,7 +184,7 @@ class TestVariableValidation:
         """Test that Bernoulli with size != 1 raises error."""
         with pytest.raises(ValueError, match="must have size=1"):
             Variable(
-                concepts='bern',
+                concept='bern',
                 distribution=Bernoulli,
                 size=3
             )
@@ -195,22 +195,22 @@ class TestVariableOutFeatures:
 
     def test_out_features_delta(self):
         """Test out_features for Delta distribution."""
-        var = Variable(concepts='d', distribution=Delta, size=3)
+        var = Variable(concept='d', distribution=Delta, size=3)
         assert var.out_features == 3
 
     def test_out_features_bernoulli(self):
         """Test out_features for Bernoulli distribution."""
-        var = Variable(concepts='b', distribution=Bernoulli, size=1)
+        var = Variable(concept='b', distribution=Bernoulli, size=1)
         assert var.out_features == 1
 
     def test_out_features_categorical(self):
         """Test out_features for OneHotCategorical distribution."""
-        var = Variable(concepts='c', distribution=OneHotCategorical, size=5)
+        var = Variable(concept='c', distribution=OneHotCategorical, size=5)
         assert var.out_features == 5
 
     def test_out_features_equals_size(self):
         """Test that out_features is always equal to size."""
-        var = Variable(concepts='x', distribution=Delta, size=2)
+        var = Variable(concept='x', distribution=Delta, size=2)
         assert var.out_features == var.size
         assert var.out_features == 2
 
@@ -220,7 +220,7 @@ class TestVariableRepr:
 
     def test_repr_without_metadata(self):
         """Test repr without metadata."""
-        var = Variable(concepts='x', distribution=Delta, size=2)
+        var = Variable(concept='x', distribution=Delta, size=2)
         repr_str = repr(var)
         assert 'Variable' in repr_str
         assert 'x' in repr_str
@@ -230,7 +230,7 @@ class TestVariableRepr:
     def test_repr_with_metadata(self):
         """Test repr with metadata."""
         var = Variable(
-            concepts='y',
+            concept='y',
             distribution=Bernoulli,
             size=1,
             metadata={'key': 'value'}
@@ -245,7 +245,7 @@ class TestEndogenousVariable:
     def test_endogenous_variable_sets_metadata(self):
         """Test that EndogenousVariable sets variable_type metadata."""
         var = EndogenousVariable(
-            concepts='endo',
+            concept='endo',
             distribution=Bernoulli,
             size=1
         )
@@ -255,7 +255,7 @@ class TestEndogenousVariable:
     def test_endogenous_variable_preserves_custom_metadata(self):
         """Test that custom metadata is preserved."""
         var = EndogenousVariable(
-            concepts='endo',
+            concept='endo',
             distribution=Delta,
             size=1,
             metadata={'custom': 'data'}
@@ -270,7 +270,7 @@ class TestExogenousVariable:
     def test_exogenous_variable_sets_metadata(self):
         """Test that ExogenousVariable sets variable_type metadata."""
         var = ExogenousVariable(
-            concepts='exo',
+            concept='exo',
             distribution=Delta,
             size=128
         )
@@ -279,9 +279,9 @@ class TestExogenousVariable:
 
     def test_exogenous_variable_with_endogenous_reference(self):
         """Test ExogenousVariable can reference an endogenous variable."""
-        endo = EndogenousVariable(concepts='e', distribution=Bernoulli, size=1)
+        endo = EndogenousVariable(concept='e', distribution=Bernoulli, size=1)
         exo = ExogenousVariable(
-            concepts='exo_e',
+            concept='exo_e',
             distribution=Delta,
             size=64,
             metadata={'endogenous_var': endo}
@@ -297,7 +297,7 @@ class TestVariableEdgeCases:
         """Test that single concept (str) with distribution as list raises error."""
         with pytest.raises(ValueError, match="must be a single value, not a list"):
             Variable(
-                concepts='x',
+                concept='x',
                 distribution=[Delta],
                 size=1
             )
@@ -306,7 +306,7 @@ class TestVariableEdgeCases:
         """Test that single concept (str) with size as list raises error."""
         with pytest.raises(ValueError, match="must be a single value, not a list"):
             Variable(
-                concepts='x',
+                concept='x',
                 distribution=Delta,
                 size=[2]
             )
@@ -327,7 +327,7 @@ class TestVariableEdgeCases:
     def test_relaxed_bernoulli_out_features(self):
         """Test out_features with RelaxedBernoulli."""
         var = Variable(
-            concepts='rb',
+            concept='rb',
             distribution=RelaxedBernoulli,
             size=1
         )
@@ -340,14 +340,14 @@ class TestVariableDeepCopy:
     def test_metadata_deep_copy(self):
         """Mutating one variable's metadata must not affect siblings."""
         meta = {'config': {'temp': 0.5}}
-        vars_ = Variable(['A', 'B'], distribution=Bernoulli, size=1, metadata=meta)
+        vars_ = Variable(concepts=['A', 'B'], distribution=Bernoulli, size=1, metadata=meta)
         vars_[0].metadata['config']['temp'] = 999
         assert vars_[1].metadata['config']['temp'] == 0.5
 
     def test_dist_kwargs_deep_copy(self):
         """Mutating one variable's dist_kwargs must not affect siblings."""
         dk = {'extra': [1, 2, 3]}
-        vars_ = Variable(['A', 'B'], distribution=Bernoulli, size=1, dist_kwargs=dk)
+        vars_ = Variable(concepts=['A', 'B'], distribution=Bernoulli, size=1, dist_kwargs=dk)
         vars_[0].dist_kwargs['extra'].append(4)
         assert vars_[1].dist_kwargs['extra'] == [1, 2, 3]
 

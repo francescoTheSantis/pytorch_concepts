@@ -443,7 +443,7 @@ class TestHelperFunctions:
     def test_set_submodule_with_parametric_cpd(self):
         """Test _set_submodule with ParametricCPD."""
         model = nn.Module()
-        cpd = ParametricCPD('concept', parametrization=nn.Linear(10, 5))
+        cpd = ParametricCPD(concept='concept', parametrization=nn.Linear(10, 5))
         _set_submodule(model, "concept", cpd)
 
         assert hasattr(model, 'concept')

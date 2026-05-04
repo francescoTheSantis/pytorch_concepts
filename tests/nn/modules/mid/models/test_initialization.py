@@ -27,7 +27,7 @@ class TestVariableInitializationContract:
 
     def test_str_concept_returns_single_variable(self):
         """String concept returns a single Variable instance, not a list."""
-        var = Variable(concepts='x', distribution=Delta, size=1)
+        var = Variable(concept='x', distribution=Delta, size=1)
         assert isinstance(var, Variable)
         assert not isinstance(var, list)
         assert var.concept == 'x'
@@ -35,17 +35,17 @@ class TestVariableInitializationContract:
     def test_str_concept_with_list_distribution_raises(self):
         """String concept with list distribution raises ValueError."""
         with pytest.raises(ValueError, match="must be a single value, not a list"):
-            Variable(concepts='x', distribution=[Delta], size=1)
+            Variable(concept='x', distribution=[Delta], size=1)
 
     def test_str_concept_with_list_size_raises(self):
         """String concept with list size raises ValueError."""
         with pytest.raises(ValueError, match="must be a single value, not a list"):
-            Variable(concepts='x', distribution=Delta, size=[1])
+            Variable(concept='x', distribution=Delta, size=[1])
 
     def test_str_concept_with_both_list_params_raises(self):
         """String concept with both list distribution and size raises ValueError."""
         with pytest.raises(ValueError, match="must be a single value, not a list"):
-            Variable(concepts='x', distribution=[Delta], size=[1])
+            Variable(concept='x', distribution=[Delta], size=[1])
 
     # --- List concepts: always returns list ---
 
@@ -123,7 +123,7 @@ class TestVariableSubclassesInitialization:
     @pytest.mark.parametrize("cls", [ConceptVariable, ExogenousVariable, LatentVariable])
     def test_subclass_str_concept_returns_single(self, cls):
         """Subclass with str concept returns single instance."""
-        var = cls(concepts='x', distribution=Delta, size=1)
+        var = cls(concept='x', distribution=Delta, size=1)
         assert isinstance(var, cls)
         assert not isinstance(var, list)
 
@@ -139,7 +139,7 @@ class TestVariableSubclassesInitialization:
     def test_subclass_str_concept_with_list_param_raises(self, cls):
         """Subclass with str concept and list param raises ValueError."""
         with pytest.raises(ValueError, match="must be a single value, not a list"):
-            cls(concepts='x', distribution=[Delta], size=1)
+            cls(concept='x', distribution=[Delta], size=1)
 
 
 class TestParametricCPDInitializationContract:
@@ -150,7 +150,7 @@ class TestParametricCPDInitializationContract:
     def test_str_concept_returns_single_cpd(self):
         """String concept returns a single ParametricCPD instance, not a list."""
         module = nn.Linear(5, 1)
-        cpd = ParametricCPD(concepts='x', parametrization=module)
+        cpd = ParametricCPD(concept='x', parametrization=module)
         assert isinstance(cpd, ParametricCPD)
         assert not isinstance(cpd, list)
         assert cpd.concept == 'x'
@@ -159,7 +159,7 @@ class TestParametricCPDInitializationContract:
         """String concept with list parametrization raises ValueError."""
         modules = [nn.Linear(5, 1)]
         with pytest.raises(ValueError, match="must be a single module, not a list"):
-            ParametricCPD(concepts='x', parametrization=modules)
+            ParametricCPD(concept='x', parametrization=modules)
 
     # --- List concepts: always returns list ---
 
@@ -213,7 +213,7 @@ class TestInitializationWithMetadata:
     def test_str_concept_preserves_metadata(self):
         """String concept Variable preserves metadata."""
         meta = {'key': 'value', 'num': 42}
-        var = Variable(concepts='x', distribution=Delta, size=1, metadata=meta)
+        var = Variable(concept='x', distribution=Delta, size=1, metadata=meta)
         assert var.metadata['key'] == 'value'
         assert var.metadata['num'] == 42
 

@@ -18,19 +18,19 @@ def main():
     cancer_var = ConceptVariable("cancer", distribution=RelaxedBernoulli, dist_kwargs={'temperature': 1.0})
 
     # ParametricCPD setup
-    input_cpd = ParametricCPD("input", parametrization=torch.nn.Sigmoid())
-    genotype_cpd = ParametricCPD("genotype",
+    input_cpd = ParametricCPD(concept="input", parametrization=torch.nn.Sigmoid())
+    genotype_cpd = ParametricCPD(concept="genotype",
                                  parametrization=torch.nn.Sequential(torch.nn.Linear(1, 1),
                                                                      torch.nn.Sigmoid()),
                                  parents=["input"])
-    smoking_cpd = ParametricCPD("smoking",
+    smoking_cpd = ParametricCPD(concept="smoking",
                                 parametrization=CallableConceptToConcept(lambda x: (x>0.5).float(), use_bias=False),
                                 parents=["genotype"])
-    tar_cpd = ParametricCPD("tar",
+    tar_cpd = ParametricCPD(concept="tar",
                             parametrization=CallableConceptToConcept(lambda x: torch.logical_or(x[:, 0]>0.5, x[:, 1]>0.5).float().unsqueeze(-1),
                                                        use_bias=False),
                             parents=["genotype", "smoking"])
-    cancer_cpd = ParametricCPD("cancer",
+    cancer_cpd = ParametricCPD(concept="cancer",
                                parametrization=CallableConceptToConcept(lambda x: x, use_bias=False),
                                parents=["tar"])
     concept_model = ProbabilisticModel(variables=[latent_var, genotype_var, smoking_var, tar_var, cancer_var],

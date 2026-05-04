@@ -355,18 +355,14 @@ class TestLazyConstructorWithComplexModules(unittest.TestCase):
     def test_with_custom_module(self):
         """Test with custom module class."""
         class CustomLayer(nn.Module):
-            def __init__(self, in_latent, out_concepts, activation='relu'):
+            def __init__(self, in_latent, out_concepts):
                 super().__init__()
                 self.linear = nn.Linear(in_latent, out_concepts)
-                self.activation = activation
 
             def forward(self, x):
-                out = self.linear(x)
-                if self.activation == 'relu':
-                    out = torch.relu(out)
-                return out
+                return self.linear(x)
 
-        lazy_constructor = LazyConstructor(CustomLayer, activation='relu')
+        lazy_constructor = LazyConstructor(CustomLayer)
         lazy_constructor.build(
             out_concepts=5,
             in_concepts=None,

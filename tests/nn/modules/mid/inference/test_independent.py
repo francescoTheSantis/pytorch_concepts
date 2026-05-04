@@ -46,14 +46,14 @@ class TestIndependentInferenceBasic:
     def _make_simple_model(self):
         """Create a simple linear chain model: input -> A -> B -> task."""
         input_var = InputVariable('input', distribution=Delta, size=10)
-        var_A = EndogenousVariable('A', distribution=Bernoulli, size=1)
-        var_B = EndogenousVariable('B', distribution=Bernoulli, size=1)
-        var_task = EndogenousVariable('task', distribution=Bernoulli, size=1)
+        var_A = EndogenousVariable(concept='A', distribution=Bernoulli, size=1)
+        var_B = EndogenousVariable(concept='B', distribution=Bernoulli, size=1)
+        var_task = EndogenousVariable(concept='task', distribution=Bernoulli, size=1)
 
-        cpd_input = ParametricCPD('input', parametrization=nn.Identity())
-        cpd_A = ParametricCPD('A', parametrization=nn.Linear(10, 1), parents=['input'])
-        cpd_B = ParametricCPD('B', parametrization=nn.Linear(1, 1), parents=['A'])
-        cpd_task = ParametricCPD('task', parametrization=nn.Linear(1, 1), parents=['B'])
+        cpd_input = ParametricCPD(concept='input', parametrization=nn.Identity())
+        cpd_A = ParametricCPD(concept='A', parametrization=nn.Linear(10, 1), parents=['input'])
+        cpd_B = ParametricCPD(concept='B', parametrization=nn.Linear(1, 1), parents=['A'])
+        cpd_task = ParametricCPD(concept='task', parametrization=nn.Linear(1, 1), parents=['B'])
 
         model = ProbabilisticModel(
             variables=[input_var, var_A, var_B, var_task],
@@ -127,12 +127,12 @@ class TestIndependentInferenceBasic:
     def test_query_preserves_order(self):
         """Test that query results are in the requested order."""
         input_var = InputVariable('input', distribution=Delta, size=10)
-        var_A = EndogenousVariable('A', distribution=Bernoulli, size=1)
-        var_B = EndogenousVariable('B', distribution=Bernoulli, size=1)
+        var_A = EndogenousVariable(concept='A', distribution=Bernoulli, size=1)
+        var_B = EndogenousVariable(concept='B', distribution=Bernoulli, size=1)
 
-        cpd_input = ParametricCPD('input', parametrization=nn.Identity())
-        cpd_A = ParametricCPD('A', parametrization=nn.Linear(10, 1), parents=['input'])
-        cpd_B = ParametricCPD('B', parametrization=nn.Linear(10, 1), parents=['input'])
+        cpd_input = ParametricCPD(concept='input', parametrization=nn.Identity())
+        cpd_A = ParametricCPD(concept='A', parametrization=nn.Linear(10, 1), parents=['input'])
+        cpd_B = ParametricCPD(concept='B', parametrization=nn.Linear(10, 1), parents=['input'])
 
         model = ProbabilisticModel(
             variables=[input_var, var_A, var_B],
@@ -171,13 +171,13 @@ class TestIndependentInferenceGroundTruthPropagation:
     def _make_chain_model(self):
         """Create chain model where output depends on parent values."""
         input_var = InputVariable('input', distribution=Delta, size=10)
-        var_A = EndogenousVariable('A', distribution=Bernoulli, size=1)
-        var_B = EndogenousVariable('B', distribution=Bernoulli, size=1)
+        var_A = EndogenousVariable(concept='A', distribution=Bernoulli, size=1)
+        var_B = EndogenousVariable(concept='B', distribution=Bernoulli, size=1)
 
-        cpd_input = ParametricCPD('input', parametrization=nn.Identity())
-        cpd_A = ParametricCPD('A', parametrization=nn.Linear(10, 1), parents=['input'])
+        cpd_input = ParametricCPD(concept='input', parametrization=nn.Identity())
+        cpd_A = ParametricCPD(concept='A', parametrization=nn.Linear(10, 1), parents=['input'])
         # B depends on A - use identity to make dependency clear
-        cpd_B = ParametricCPD('B', parametrization=nn.Linear(1, 1), parents=['A'])
+        cpd_B = ParametricCPD(concept='B', parametrization=nn.Linear(1, 1), parents=['A'])
 
         model = ProbabilisticModel(
             variables=[input_var, var_A, var_B],
@@ -246,19 +246,19 @@ class TestIndependentInferenceGradientFlow:
     def _make_chain_model_with_tracking(self):
         """Create chain model with gradient-tracking linear layers."""
         input_var = InputVariable('input', distribution=Delta, size=10)
-        var_A = EndogenousVariable('A', distribution=Bernoulli, size=1)
-        var_B = EndogenousVariable('B', distribution=Bernoulli, size=1)
-        var_task = EndogenousVariable('task', distribution=Bernoulli, size=1)
+        var_A = EndogenousVariable(concept='A', distribution=Bernoulli, size=1)
+        var_B = EndogenousVariable(concept='B', distribution=Bernoulli, size=1)
+        var_task = EndogenousVariable(concept='task', distribution=Bernoulli, size=1)
 
         # Named modules for easy access to gradients
         linear_A = nn.Linear(10, 1)
         linear_B = nn.Linear(1, 1)
         linear_task = nn.Linear(1, 1)
 
-        cpd_input = ParametricCPD('input', parametrization=nn.Identity())
-        cpd_A = ParametricCPD('A', parametrization=linear_A, parents=['input'])
-        cpd_B = ParametricCPD('B', parametrization=linear_B, parents=['A'])
-        cpd_task = ParametricCPD('task', parametrization=linear_task, parents=['B'])
+        cpd_input = ParametricCPD(concept='input', parametrization=nn.Identity())
+        cpd_A = ParametricCPD(concept='A', parametrization=linear_A, parents=['input'])
+        cpd_B = ParametricCPD(concept='B', parametrization=linear_B, parents=['A'])
+        cpd_task = ParametricCPD(concept='task', parametrization=linear_task, parents=['B'])
 
         model = ProbabilisticModel(
             variables=[input_var, var_A, var_B, var_task],
@@ -385,12 +385,12 @@ class TestIndependentInferenceWithCategorical:
     def _make_categorical_model(self):
         """Create model with categorical concept."""
         input_var = InputVariable('input', distribution=Delta, size=10)
-        var_A = EndogenousVariable('A', distribution=OneHotCategorical, size=4)  # 4-class
-        var_B = EndogenousVariable('B', distribution=Bernoulli, size=1)
+        var_A = EndogenousVariable(concept='A', distribution=OneHotCategorical, size=4)  # 4-class
+        var_B = EndogenousVariable(concept='B', distribution=Bernoulli, size=1)
 
-        cpd_input = ParametricCPD('input', parametrization=nn.Identity())
-        cpd_A = ParametricCPD('A', parametrization=nn.Linear(10, 4), parents=['input'])
-        cpd_B = ParametricCPD('B', parametrization=nn.Linear(4, 1), parents=['A'])
+        cpd_input = ParametricCPD(concept='input', parametrization=nn.Identity())
+        cpd_A = ParametricCPD(concept='A', parametrization=nn.Linear(10, 4), parents=['input'])
+        cpd_B = ParametricCPD(concept='B', parametrization=nn.Linear(4, 1), parents=['A'])
 
         model = ProbabilisticModel(
             variables=[input_var, var_A, var_B],
@@ -433,14 +433,14 @@ class TestIndependentInferenceWithExogenous:
     def _make_model_with_exogenous(self):
         """Create model with exogenous variables like CEM uses."""
         input_var = InputVariable('input', distribution=Delta, size=10)
-        exo_var = ExogenousVariable('exo', distribution=Delta, size=8)
-        var_A = EndogenousVariable('A', distribution=Bernoulli, size=1)
-        var_B = EndogenousVariable('B', distribution=Bernoulli, size=1)
+        exo_var = ExogenousVariable(concept='exo', distribution=Delta, size=8)
+        var_A = EndogenousVariable(concept='A', distribution=Bernoulli, size=1)
+        var_B = EndogenousVariable(concept='B', distribution=Bernoulli, size=1)
 
-        cpd_input = ParametricCPD('input', parametrization=nn.Identity())
-        cpd_exo = ParametricCPD('exo', parametrization=nn.Linear(10, 8), parents=['input'])
-        cpd_A = ParametricCPD('A', parametrization=nn.Linear(8, 1), parents=['exo'])
-        cpd_B = ParametricCPD('B', parametrization=nn.Linear(9, 1), parents=['exo', 'A'])  # 8 from exo + 1 from A
+        cpd_input = ParametricCPD(concept='input', parametrization=nn.Identity())
+        cpd_exo = ParametricCPD(concept='exo', parametrization=nn.Linear(10, 8), parents=['input'])
+        cpd_A = ParametricCPD(concept='A', parametrization=nn.Linear(8, 1), parents=['exo'])
+        cpd_B = ParametricCPD(concept='B', parametrization=nn.Linear(9, 1), parents=['exo', 'A'])  # 8 from exo + 1 from A
 
         model = ProbabilisticModel(
             variables=[input_var, exo_var, var_A, var_B],
@@ -451,18 +451,18 @@ class TestIndependentInferenceWithExogenous:
     def _make_model_with_exogenous_and_tracking(self):
         """Create model with exogenous and gradient tracking."""
         input_var = InputVariable('input', distribution=Delta, size=10)
-        exo_var = ExogenousVariable('exo', distribution=Delta, size=8)
-        var_A = EndogenousVariable('A', distribution=Bernoulli, size=1)
-        var_B = EndogenousVariable('B', distribution=Bernoulli, size=1)
+        exo_var = ExogenousVariable(concept='exo', distribution=Delta, size=8)
+        var_A = EndogenousVariable(concept='A', distribution=Bernoulli, size=1)
+        var_B = EndogenousVariable(concept='B', distribution=Bernoulli, size=1)
 
         linear_exo = nn.Linear(10, 8)
         linear_A = nn.Linear(8, 1)
         linear_B = nn.Linear(9, 1)
 
-        cpd_input = ParametricCPD('input', parametrization=nn.Identity())
-        cpd_exo = ParametricCPD('exo', parametrization=linear_exo, parents=['input'])
-        cpd_A = ParametricCPD('A', parametrization=linear_A, parents=['exo'])
-        cpd_B = ParametricCPD('B', parametrization=linear_B, parents=['exo', 'A'])
+        cpd_input = ParametricCPD(concept='input', parametrization=nn.Identity())
+        cpd_exo = ParametricCPD(concept='exo', parametrization=linear_exo, parents=['input'])
+        cpd_A = ParametricCPD(concept='A', parametrization=linear_A, parents=['exo'])
+        cpd_B = ParametricCPD(concept='B', parametrization=linear_B, parents=['exo', 'A'])
 
         model = ProbabilisticModel(
             variables=[input_var, exo_var, var_A, var_B],
@@ -642,16 +642,16 @@ class TestIndependentInferenceWithExogenous:
     def test_multiple_exogenous_variables(self):
         """Test model with multiple exogenous variables."""
         input_var = InputVariable('input', distribution=Delta, size=10)
-        exo_1 = ExogenousVariable('exo_1', distribution=Delta, size=4)
-        exo_2 = ExogenousVariable('exo_2', distribution=Delta, size=4)
-        var_A = EndogenousVariable('A', distribution=Bernoulli, size=1)
-        var_B = EndogenousVariable('B', distribution=Bernoulli, size=1)
+        exo_1 = ExogenousVariable(concept='exo_1', distribution=Delta, size=4)
+        exo_2 = ExogenousVariable(concept='exo_2', distribution=Delta, size=4)
+        var_A = EndogenousVariable(concept='A', distribution=Bernoulli, size=1)
+        var_B = EndogenousVariable(concept='B', distribution=Bernoulli, size=1)
 
-        cpd_input = ParametricCPD('input', parametrization=nn.Identity())
-        cpd_exo_1 = ParametricCPD('exo_1', parametrization=nn.Linear(10, 4), parents=['input'])
-        cpd_exo_2 = ParametricCPD('exo_2', parametrization=nn.Linear(10, 4), parents=['input'])
-        cpd_A = ParametricCPD('A', parametrization=nn.Linear(4, 1), parents=['exo_1'])
-        cpd_B = ParametricCPD('B', parametrization=nn.Linear(4, 1), parents=['exo_2'])
+        cpd_input = ParametricCPD(concept='input', parametrization=nn.Identity())
+        cpd_exo_1 = ParametricCPD(concept='exo_1', parametrization=nn.Linear(10, 4), parents=['input'])
+        cpd_exo_2 = ParametricCPD(concept='exo_2', parametrization=nn.Linear(10, 4), parents=['input'])
+        cpd_A = ParametricCPD(concept='A', parametrization=nn.Linear(4, 1), parents=['exo_1'])
+        cpd_B = ParametricCPD(concept='B', parametrization=nn.Linear(4, 1), parents=['exo_2'])
 
         model = ProbabilisticModel(
             variables=[input_var, exo_1, exo_2, var_A, var_B],
@@ -681,18 +681,18 @@ class TestIndependentInferenceWithExogenous:
         """
         input_var = InputVariable('input', distribution=Delta, size=10)
         # Shared embedding (like CEM's concept embeddings)
-        exo_emb = ExogenousVariable('embedding', distribution=Delta, size=16)
+        exo_emb = ExogenousVariable(concept='embedding', distribution=Delta, size=16)
         # Concept depends on embedding
-        var_c1 = EndogenousVariable('c1', distribution=Bernoulli, size=1)
-        var_c2 = EndogenousVariable('c2', distribution=Bernoulli, size=1)
+        var_c1 = EndogenousVariable(concept='c1', distribution=Bernoulli, size=1)
+        var_c2 = EndogenousVariable(concept='c2', distribution=Bernoulli, size=1)
         # Task depends on embedding AND concepts
-        var_task = EndogenousVariable('task', distribution=Bernoulli, size=1)
+        var_task = EndogenousVariable(concept='task', distribution=Bernoulli, size=1)
 
-        cpd_input = ParametricCPD('input', parametrization=nn.Identity())
-        cpd_emb = ParametricCPD('embedding', parametrization=nn.Linear(10, 16), parents=['input'])
-        cpd_c1 = ParametricCPD('c1', parametrization=nn.Linear(16, 1), parents=['embedding'])
-        cpd_c2 = ParametricCPD('c2', parametrization=nn.Linear(16, 1), parents=['embedding'])
-        cpd_task = ParametricCPD('task', parametrization=nn.Linear(18, 1), parents=['embedding', 'c1', 'c2'])  # 16 + 1 + 1
+        cpd_input = ParametricCPD(concept='input', parametrization=nn.Identity())
+        cpd_emb = ParametricCPD(concept='embedding', parametrization=nn.Linear(10, 16), parents=['input'])
+        cpd_c1 = ParametricCPD(concept='c1', parametrization=nn.Linear(16, 1), parents=['embedding'])
+        cpd_c2 = ParametricCPD(concept='c2', parametrization=nn.Linear(16, 1), parents=['embedding'])
+        cpd_task = ParametricCPD(concept='task', parametrization=nn.Linear(18, 1), parents=['embedding', 'c1', 'c2'])  # 16 + 1 + 1
 
         model = ProbabilisticModel(
             variables=[input_var, exo_emb, var_c1, var_c2, var_task],
@@ -727,18 +727,18 @@ class TestIndependentInferenceWithExogenous:
         - NOT create gradients for concept encoders (GT used)
         """
         input_var = InputVariable('input', distribution=Delta, size=10)
-        exo_emb = ExogenousVariable('embedding', distribution=Delta, size=16)
-        var_c1 = EndogenousVariable('c1', distribution=Bernoulli, size=1)
-        var_task = EndogenousVariable('task', distribution=Bernoulli, size=1)
+        exo_emb = ExogenousVariable(concept='embedding', distribution=Delta, size=16)
+        var_c1 = EndogenousVariable(concept='c1', distribution=Bernoulli, size=1)
+        var_task = EndogenousVariable(concept='task', distribution=Bernoulli, size=1)
 
         linear_emb = nn.Linear(10, 16)
         linear_c1 = nn.Linear(16, 1)
         linear_task = nn.Linear(17, 1)  # 16 + 1
 
-        cpd_input = ParametricCPD('input', parametrization=nn.Identity())
-        cpd_emb = ParametricCPD('embedding', parametrization=linear_emb, parents=['input'])
-        cpd_c1 = ParametricCPD('c1', parametrization=linear_c1, parents=['embedding'])
-        cpd_task = ParametricCPD('task', parametrization=linear_task, parents=['embedding', 'c1'])
+        cpd_input = ParametricCPD(concept='input', parametrization=nn.Identity())
+        cpd_emb = ParametricCPD(concept='embedding', parametrization=linear_emb, parents=['input'])
+        cpd_c1 = ParametricCPD(concept='c1', parametrization=linear_c1, parents=['embedding'])
+        cpd_task = ParametricCPD(concept='task', parametrization=linear_task, parents=['embedding', 'c1'])
 
         model = ProbabilisticModel(
             variables=[input_var, exo_emb, var_c1, var_task],
@@ -789,10 +789,10 @@ class TestIndependentInferenceDeviceModes:
     def _make_simple_model(self):
         """Create a simple model for testing."""
         input_var = InputVariable('input', distribution=Delta, size=10)
-        var_A = EndogenousVariable('A', distribution=Bernoulli, size=1)
+        var_A = EndogenousVariable(concept='A', distribution=Bernoulli, size=1)
 
-        cpd_input = ParametricCPD('input', parametrization=nn.Identity())
-        cpd_A = ParametricCPD('A', parametrization=nn.Linear(10, 1), parents=['input'])
+        cpd_input = ParametricCPD(concept='input', parametrization=nn.Identity())
+        cpd_A = ParametricCPD(concept='A', parametrization=nn.Linear(10, 1), parents=['input'])
 
         model = ProbabilisticModel(
             variables=[input_var, var_A],
@@ -843,10 +843,10 @@ class TestIndependentInferenceErrorHandling:
     def _make_simple_model(self):
         """Create a simple model for testing."""
         input_var = InputVariable('input', distribution=Delta, size=10)
-        var_A = EndogenousVariable('A', distribution=Bernoulli, size=1)
+        var_A = EndogenousVariable(concept='A', distribution=Bernoulli, size=1)
 
-        cpd_input = ParametricCPD('input', parametrization=nn.Identity())
-        cpd_A = ParametricCPD('A', parametrization=nn.Linear(10, 1), parents=['input'])
+        cpd_input = ParametricCPD(concept='input', parametrization=nn.Identity())
+        cpd_A = ParametricCPD(concept='A', parametrization=nn.Linear(10, 1), parents=['input'])
 
         model = ProbabilisticModel(
             variables=[input_var, var_A],
@@ -882,12 +882,12 @@ class TestIndependentVsDeterministicInference:
     def _make_chain_model(self):
         """Create a chain model for comparison."""
         input_var = InputVariable('input', distribution=Delta, size=10)
-        var_A = EndogenousVariable('A', distribution=Bernoulli, size=1)
-        var_B = EndogenousVariable('B', distribution=Bernoulli, size=1)
+        var_A = EndogenousVariable(concept='A', distribution=Bernoulli, size=1)
+        var_B = EndogenousVariable(concept='B', distribution=Bernoulli, size=1)
 
-        cpd_input = ParametricCPD('input', parametrization=nn.Identity())
-        cpd_A = ParametricCPD('A', parametrization=nn.Linear(10, 1), parents=['input'])
-        cpd_B = ParametricCPD('B', parametrization=nn.Linear(1, 1), parents=['A'])
+        cpd_input = ParametricCPD(concept='input', parametrization=nn.Identity())
+        cpd_A = ParametricCPD(concept='A', parametrization=nn.Linear(10, 1), parents=['input'])
+        cpd_B = ParametricCPD(concept='B', parametrization=nn.Linear(1, 1), parents=['A'])
 
         model = ProbabilisticModel(
             variables=[input_var, var_A, var_B],
@@ -949,12 +949,12 @@ class TestConceptMapping:
     def _make_simple_model(self):
         """Create a simple model for testing."""
         input_var = InputVariable('input', distribution=Delta, size=10)
-        var_A = EndogenousVariable('A', distribution=Bernoulli, size=1)
-        var_B = EndogenousVariable('B', distribution=Bernoulli, size=1)
+        var_A = EndogenousVariable(concept='A', distribution=Bernoulli, size=1)
+        var_B = EndogenousVariable(concept='B', distribution=Bernoulli, size=1)
 
-        cpd_input = ParametricCPD('input', parametrization=nn.Identity())
-        cpd_A = ParametricCPD('A', parametrization=nn.Linear(10, 1), parents=['input'])
-        cpd_B = ParametricCPD('B', parametrization=nn.Linear(10, 1), parents=['input'])
+        cpd_input = ParametricCPD(concept='input', parametrization=nn.Identity())
+        cpd_A = ParametricCPD(concept='A', parametrization=nn.Linear(10, 1), parents=['input'])
+        cpd_B = ParametricCPD(concept='B', parametrization=nn.Linear(10, 1), parents=['input'])
 
         model = ProbabilisticModel(
             variables=[input_var, var_A, var_B],
