@@ -34,7 +34,7 @@ from typing import Dict, List, Optional, Sequence, Tuple
 import torch
 import torch.nn as nn
 from hydra.utils import get_original_cwd, instantiate
-from omegaconf import DictConfig, OmegaConf
+from omegaconf import DictConfig, ListConfig, OmegaConf
 
 from conceptarium.utils import (
     attach_latent_encoder,
@@ -65,15 +65,25 @@ def is_job_dir(path: Path) -> bool:
 
 
 def matches_filters(job_dir: Path, filters: Optional[dict]) -> bool:
-    """Does the run's own saved config satisfy every ``dotted.key: value``?"""
+    """Does the run's own saved config satisfy every ``dotted.key: value``?
+
+    A value may be a **list**, which the key then has to match one of — how two
+    model classes are pulled into a single comparison table without also
+    admitting every discriminative run sitting in the same output tree.
+    """
     if not filters:
         return True
     try:
         job_cfg = OmegaConf.load(job_dir / ".hydra" / "config.yaml")
     except Exception:  # unreadable config -- treat as non-matching, not fatal
         return False
+
+    def matches(found, want) -> bool:
+        accepted = list(want) if isinstance(want, (list, ListConfig)) else [want]
+        return found is not None and any(str(found) == str(w) for w in accepted)
+
     return all(
-        (found := OmegaConf.select(job_cfg, key)) is not None and str(found) == str(want)
+        matches(OmegaConf.select(job_cfg, key), want)
         for key, want in filters.items()
     )
 
@@ -316,6 +326,35 @@ def concept_states(variable, device=None) -> List[Tuple[str, torch.Tensor]]:
     return values if device is None else [(k, v.to(device)) for k, v in values]
 
 
+def encoding_query(model, concepts: torch.Tensor) -> Dict[str, Optional[torch.Tensor]]:
+    """The query to run the model's own (variational) engine with.
+
+    ``model.default_query`` rather than a bare list of variable names, because
+    what a guide needs is the model's business: a CBGM encodes from the image
+    alone, while a conditional model's ``q(z | x, c)`` also reads the concepts,
+    and only the model knows which. The ground truth is supplied either way —
+    for a model that does not need it this is a no-op, since a concept it
+    *predicts* is a latent site (``p_int`` is 0 on an eval engine, so nothing is
+    forced to the supplied value).
+    """
+    return model.default_query(concepts)
+
+
+def decoding_evidence(ctx, concepts: torch.Tensor) -> Dict[str, torch.Tensor]:
+    """Concept evidence the observation's own CPD needs in order to decode.
+
+    Empty unless the concepts are *parents* of ``input`` — which is exactly the
+    difference between the two families of model here. A CBGM decodes from a
+    bottleneck built out of ``z``, so its concepts are not needed (and must not
+    be clamped: they are predictions, and pinning them to the ground truth would
+    show a reconstruction the model does not actually produce). A conditional
+    model decodes from ``[z, c]``, so without ``c`` there is nothing to decode.
+    """
+    parents = {p.name for p in ctx.model.pgm.factors["input"].parents}
+    forced = ctx.model.fully_observed_query(concepts)
+    return {name: value for name, value in forced.items() if name in parents}
+
+
 def observation_of(model, out, name: str = "input") -> torch.Tensor:
     """The reconstructed observation, whichever quantity its family reports.
 
@@ -360,15 +399,25 @@ class EvalContext:
 
     def real_samples(self, n: int) -> torch.Tensor:
         """``n`` flattened test images."""
+        return self.real_batch(n)[0]
+
+    def real_batch(self, n: int) -> Tuple[torch.Tensor, torch.Tensor]:
+        """``n`` flattened test images and their concept labels.
+
+        Both halves, because encoding an image is not always a function of the
+        image alone: a conditional model's guide ``q(z | x, c)`` reads the
+        concepts too (see :func:`encoding_query`).
+        """
         loader = self.datamodule.test_dataloader() or self.datamodule.val_dataloader()
-        out, taken = [], 0
+        images, labels, taken = [], [], 0
         for batch in loader:
             x = batch["inputs"]["x"]
-            out.append(x.reshape(x.shape[0], -1)[: n - taken])
-            taken += out[-1].shape[0]
+            images.append(x.reshape(x.shape[0], -1)[: n - taken])
+            labels.append(batch["concepts"]["c"][: n - taken])
+            taken += images[-1].shape[0]
             if taken >= n:
                 break
-        return torch.cat(out).to(self.device)
+        return torch.cat(images).to(self.device), torch.cat(labels).to(self.device)
 
     def generate(self, n: int) -> Tuple[torch.Tensor, Dict[str, torch.Tensor]]:
         """``(samples, drawn)`` from ``n`` prior draws, computed once and cached.
@@ -597,14 +646,14 @@ class ReconstructionNLL(Metric):
         loader = ctx.datamodule.test_dataloader() or ctx.datamodule.val_dataloader()
         reconstruction = ReconstructionLoss(variable="input")
         max_batches = ctx.cfg.get("max_eval_batches")
-        vi_query = list(ctx.model.pgm.variables)
         total, nll = 0, 0.0
         with torch.inference_mode():
             for index, batch in enumerate(loader):
                 if max_batches is not None and index >= max_batches:
                     break
                 x = batch["inputs"]["x"].to(ctx.device)
-                out = ctx.model(query=vi_query, input=x)
+                c = batch["concepts"]["c"].to(ctx.device)
+                out = ctx.model(query=encoding_query(ctx.model, c), input=x)
                 out.extra = {"evidence": {"input": x}}
                 nll += reconstruction(out) * x.shape[0]
                 total += x.shape[0]
@@ -625,7 +674,6 @@ class ConceptAccuracy(Metric):
     def compute(self, ctx: EvalContext) -> Dict[str, float]:
         loader = ctx.datamodule.test_dataloader() or ctx.datamodule.val_dataloader()
         max_batches = ctx.cfg.get("max_eval_batches")
-        vi_query = list(ctx.model.pgm.variables)
         metrics = ctx.model.test_metrics
         metrics.reset()
         with torch.inference_mode():
@@ -634,8 +682,10 @@ class ConceptAccuracy(Metric):
                     break
                 x = batch["inputs"]["x"].to(ctx.device)
                 c = batch["concepts"]["c"].to(ctx.device)
-                metrics.update(ctx.model(query=vi_query, input=x),
-                               ctx.model.prepare_target(c))
+                metrics.update(
+                    ctx.model(query=encoding_query(ctx.model, c), input=x),
+                    ctx.model.prepare_target(c),
+                )
         return {k: float(v) for k, v in metrics.compute().items()}
 
 
@@ -870,16 +920,21 @@ def figure_overview(ctx: EvalContext, out_dir: Path, n: int) -> None:
     generative model is judged on both at once: sharp reconstructions beside
     incoherent samples means the posterior has drifted off the prior.
     """
-    images = ctx.real_samples(n)
+    images, concepts = ctx.real_batch(n)
     generated, _ = ctx.generate(n)
     with torch.no_grad():
         # The guide is the only route from an image to a posterior z, so encoding
         # needs the variational engine (the model's own eval one), which requires
         # every variable in its query. The posterior *mean*, not a draw, so the
         # row shows the model's best reconstruction.
-        encoded = ctx.model(query=list(ctx.model.pgm.variables),
+        encoded = ctx.model(query=encoding_query(ctx.model, concepts),
                             input=images.reshape(-1, *ctx.modality.shape))
-        recon = ctx.decode({"z": encoded.guide_params["loc"]["z"].tensor})
+        # A conditional decoder needs the condition back as evidence: its `z` is
+        # only half of the decoder's input. Empty for a model that decodes from
+        # `z` alone, which is then reconstructed exactly as before.
+        evidence = {"z": encoded.guide_params["loc"]["z"].tensor}
+        evidence.update(decoding_evidence(ctx, concepts))
+        recon = ctx.decode(evidence)
     save_grid([images, recon, generated], ctx.modality.shape, out_dir / "overview.png",
               row_labels=["original", "reconstruction", "generation"])
 

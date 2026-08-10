@@ -1,7 +1,7 @@
 # =============================================================
 # Post-hoc analysis of trained generative concept models.
 #
-#   python conceptarium/analysis/run_generative_analysis.py                 # every cbgm run
+#   python conceptarium/analysis/run_generative_analysis.py                 # every generative run
 #   python conceptarium/analysis/run_generative_analysis.py all_jobs=false  # newest only
 #   python conceptarium/analysis/run_generative_analysis.py job_dir=<hydra job dir>
 #
@@ -50,8 +50,16 @@ search_dirs:
 # Applied to each run's own saved config, by dotted key. A run counts as finished
 # when it has a checkpoint, which is both the truth and the only thing that makes
 # it analysable.
+#
+# A list matches any of its entries, which is what puts the two generative models
+# into ONE results table: `results_by_model.csv` then has a row per model per
+# dataset, averaged over seeds. The filter is not dropped altogether because the
+# same output tree holds discriminative runs (CBM, CEM, ...), which have no
+# `input` variable to generate and would crash the analysis.
 filters:
-  model.model_cls._target_: torch_concepts.nn.ConceptBottleneckGenerativeModel
+  model.model_cls._target_:
+    - torch_concepts.nn.ConceptBottleneckGenerativeModel
+    - torch_concepts.nn.ConditionalVariationalAutoencoder
 
 # true (default): analyse every matching run -- what comparing a sweep needs.
 # false: only the newest. Ignored when `job_dir` is given explicitly.

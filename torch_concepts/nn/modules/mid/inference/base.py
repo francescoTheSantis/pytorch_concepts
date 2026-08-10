@@ -117,14 +117,23 @@ class BaseInference(nn.Module):
         # Factor-based (not variable-keyed): a ProbabilisticModel keys factors by
         # factor name, and undirected potentials have no ``is_root``. Only root CPDs
         # whose parametrization needs inputs must receive constant evidence every call.
+        #
+        # ``*args``/``**kwargs`` do not count as declared inputs: a root prior
+        # composed with its parameter's activation is a ``Sequential``, whose
+        # forward is variadic but which is still called with nothing. Counting
+        # those would warn about every root the models build themselves.
+        def declares_inputs(module) -> bool:
+            return any(
+                p.kind not in (inspect.Parameter.VAR_POSITIONAL,
+                               inspect.Parameter.VAR_KEYWORD)
+                for p in inspect.signature(module.forward).parameters.values()
+            )
+
         roots_needing_input: List[str] = [
             f.name
             for f in pgm.factors.values()
             if getattr(f, "is_root", False)
-            and any(
-                len(inspect.signature(mod.forward).parameters) > 0
-                for mod in f.parametrization.values()
-            )
+            and any(declares_inputs(mod) for mod in f.parametrization.values())
         ]
         if roots_needing_input:
             warnings.warn(

@@ -119,13 +119,16 @@ class ConceptBottleneckGenerativeModel(DirectedGraphModel):
         ``scale_learnable``, its fixed value otherwise. It sets the weight of the
         reconstruction term: the Gaussian NLL's gradient carries a
         ``1 / scale**2`` factor, so halving it quadruples reconstruction relative
-        to the KL. For images in ``[0, 1]``, values below ~0.3 make the KL
-        negligible unless its loss weight is raised to compensate.
-    scale_learnable : bool, default True
-        Whether ``global_scale`` is trained. A learned scale settles at the
+        to the KL. At the default of ``1.0`` that factor is ``1`` and the
+        Gaussian NLL is ``0.5 * (x - loc)**2`` plus a constant — i.e. training
+        reduces to plain MSE on the predicted mean, and the KL weight is a true
+        ``beta``.
+    scale_learnable : bool, default False
+        Whether ``global_scale`` is trained. Off by default so the likelihood
+        stays the fixed-sigma one described above. A learned scale settles at the
         residual RMS, which shrinks as the fit improves and therefore keeps
-        *raising* the effective reconstruction weight — annealing the KL away.
-        Set ``False`` to pin the trade-off at ``scale_init``.
+        *raising* the effective reconstruction weight — annealing the KL away
+        without that showing up in any loss weight.
     inference, inference_kwargs, train_inference, train_inference_kwargs
         Inference engine configuration. Defaults to
         :class:`~torch_concepts.nn.VariationalInference`, with the guide on
@@ -222,7 +225,7 @@ class ConceptBottleneckGenerativeModel(DirectedGraphModel):
         observation: Type = Normal,
         global_scale: bool = True,
         scale_init: float = 1.0,
-        scale_learnable: bool = True,
+        scale_learnable: bool = False,
         inference: Optional[BaseInference] = VariationalInference,
         inference_kwargs: Optional[dict] = None,
         train_inference: Optional[BaseInference] = None,

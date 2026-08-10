@@ -244,7 +244,8 @@ class TestNormalObservation:
     and every sample, instead of a whole second copy of the decoder.
     """
 
-    def _model(self, binary_annotations, global_scale=True, input_size=INPUT_SIZE):
+    def _model(self, binary_annotations, global_scale=True, input_size=INPUT_SIZE,
+               **kwargs):
         n_contexts = len(binary_annotations.labels) + 1
         flat_size = input_size if isinstance(input_size, int) else 1
         if not isinstance(input_size, int):
@@ -260,6 +261,7 @@ class TestNormalObservation:
             observation=Normal,
             global_scale=global_scale,
             plate=False,
+            **kwargs,
         )
 
     def test_reports_loc_and_positive_scale(self, binary_annotations):
@@ -269,7 +271,11 @@ class TestNormalObservation:
         assert bool((out.scale["input"] > 0).all())
 
     def test_global_scale_has_exactly_one_parameter(self, binary_annotations):
-        model = self._model(binary_annotations, global_scale=True)
+        # `scale_learnable` explicitly: it defaults to False, which pins sigma at
+        # `scale_init` and leaves the head with no parameters at all (covered by
+        # `test_fixed_scale_head_has_no_parameters`). This test is about the
+        # learnable path — one scalar for the whole image, not a second decoder.
+        model = self._model(binary_annotations, global_scale=True, scale_learnable=True)
         scale_head = model.pgm.factors["input"].parametrization["scale"]
         assert sum(p.numel() for p in scale_head.parameters()) == 1
 
@@ -420,6 +426,30 @@ class TestTeacherForcingRate:
         for p_int in (0.0, 0.5, 1.0):
             forced = self._model(annotations, p_int).default_query(ground_truth)["a"]
             assert torch.equal(forced, ground_truth)
+
+    def test_supplying_the_ground_truth_at_p_int_zero_changes_nothing(self):
+        """At ``p_int=0`` a query value is inert — bit-for-bit.
+
+        Relied on by ``analysis/run_generative_analysis.py``, which asks the model
+        for its own query (``default_query``) so that a *conditional* model gets
+        the concepts its guide needs. That must leave a CBGM's evaluation exactly
+        as it was, since its eval engine predicts the concepts rather than being
+        handed them.
+        """
+        annotations = Annotations(
+            labels=["a", "d"], cardinalities=[1, 4], types=["binary", "categorical"]
+        )
+        model = self._model(annotations, p_int=0.0).eval()
+        x = torch.rand(4, INPUT_SIZE)
+        c = torch.tensor([[1.0, 2.0], [0.0, 3.0], [1.0, 0.0], [0.0, 1.0]])
+
+        torch.manual_seed(0)
+        without = model(query=list(model.pgm.variables), input=x)
+        torch.manual_seed(0)
+        with_gt = model(query=model.default_query(c), input=x)
+
+        assert torch.equal(without.loc["input"].tensor, with_gt.loc["input"].tensor)
+        assert torch.equal(without.probs["d"].tensor, with_gt.probs["d"].tensor)
 
     def test_fixed_scale_head_has_no_parameters(self):
         annotations = Annotations(labels=["a"], cardinalities=[1], types=["binary"])

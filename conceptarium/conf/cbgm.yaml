@@ -47,7 +47,7 @@ hydra:
     params:
       dataset: colormnist, celeba
       alpha: 50, 100
-      kl: 5
+      kl: 1
       p_int: 1
       model.model_cls.use_unknown: false 
       model.model_cls.latent_size: 32
@@ -58,38 +58,43 @@ seed: 42
 # Loss weights as named keys, sweepable without restating the whole
 # `loss.weights` list -- e.g. `-m alpha=1,5,10 kl=0.5,1`. Order is fixed
 # by conf/loss/cbgm.yaml's `terms`; the numbers match its defaults.
-recon: 1.0    # -log p(input | bottleneck)
-# Not 1.0: with a Gaussian likelihood the reconstruction gradient carries a
-# 1/sigma^2 factor, so at the model config's fixed sigma=0.3 it outweighs the KL
-# on the encoder. beta=1 is only the true ELBO when sigma is the real noise
-# level; here it left q(z|x) free to drift off the prior.
+recon: 1.0    # -log p(input | bottleneck), which at sigma=1 IS 0.5 * MSE
+# 1.0, i.e. the true ELBO. The model config pins sigma=1, so the reconstruction
+# gradient no longer carries the 1/sigma^2 factor that used to make this
+# implicitly ~11x larger than it looked (sigma was 0.3). The recon:KL ratio here
+# reproduces the previously tuned one: 10 * 0.3^2 = 0.9 ~= 1.
 #
-# CAUTION, this is NOT the reference's 10. The reference computes
+# For reference on the scale, the CBGM paper computes
 #   prior_loss = (-0.5 * sum(1 + logvar - mean^2 - exp(logvar))) / numel(mean) * 10
 # i.e. it divides the KL by (batch x latent_size) before scaling, while
 # KLDivergenceLoss here sums the event and averages only the batch. In this
-# convention the reference's weight is 10 / latent_size = 10/32 ~= 0.31, so the
-# earlier sweep around 10 was anchored ~32x too high. The reference's
+# convention the reference's weight is 10 / latent_size = 10/32 ~= 0.31. Its
 # reconstruction is also a MEAN over discriminator features, not a sum over
 # pixels, so neither term is directly comparable -- treat 0.31 as a landmark to
 # bracket, not a target.
 #
-# Also note the recon:KL ratios quoted below assume D=2352 pixels carry signal.
+# Note also that any recon:KL arithmetic assumes D=2352 pixels carry signal.
 # On colormnist they do not: `colorize` writes the intensity into ONE RGB
 # channel, so 1568 of those dims are identically zero and most of the rest are
-# background. The true ratio is milder than the arithmetic suggests.
-kl: 10.0      # KL( q(z|input) || p(z) )
+# background. The effective ratio is milder than the arithmetic suggests.
+kl: 1.0       # KL( q(z|input) || p(z) )
 # Not the reference's 5.0. At a low `p_int` the concepts are mostly not
-# teacher-forced, so a concept is only predictable if q(z|x) encoded it -- and it is RECONSTRUCTION
-# that decides what z encodes. That term sums over D pixels and carries the same
-# 1/sigma^2 factor, so at alpha=5 it outweighs concept supervision 81:1 on the
-# encoder (measured at init, D=2352, sigma=0.3).
+# teacher-forced, so a concept is only predictable if q(z|x) encoded it -- and it
+# is RECONSTRUCTION that decides what z encodes. That term sums over D pixels, so
+# it outweighed concept supervision 81:1 on the encoder at alpha=5 (measured at
+# init, D=2352, and at the sigma=0.3 this config used to set).
 #
 # The cost falls on whichever concept contributes least to pixel MSE. On a
 # colormnist-shaped toy, color (a global tint, which reconstruction encodes for
 # free) held 0.999 at every setting while the 10-way digit went
 #   alpha 5 -> 0.103 (chance)   100 -> 0.972   1000 -> 0.997
-# Equalising the two gradients at init needs ~400; the sweep above brackets that.
+# Equalising the two gradients at init needed ~400 there.
+#
+# CAUTION: those numbers were all measured at sigma=0.3. sigma is now 1, which
+# divides the reconstruction gradient by 1/0.3^2 ~= 11 and leaves concept
+# supervision untouched -- so the whole useful range of `alpha` shifts DOWN by
+# about that factor (the ~400 landmark becomes ~36). The values below are kept
+# as-is rather than silently rescaled; re-sweep before trusting them.
 alpha: 100.0  # concept supervision  (reference ALPHA)
 beta: 1.0     # orthogonality        (reference BETA)
 

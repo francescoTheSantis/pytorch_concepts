@@ -39,6 +39,7 @@ Models
    ConceptBottleneckModel
    ConceptEmbeddingModel
    ConceptBottleneckGenerativeModel
+   ConditionalVariationalAutoencoder
    GraphConceptBottleneckModel
    CausallyReliableConceptBottleneckModel
    BlackBox

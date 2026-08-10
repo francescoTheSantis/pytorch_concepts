@@ -92,11 +92,12 @@ def main():
         latent_size=LATENT_SIZE,
         embedding_size=EMBEDDING_SIZE,
         # A Gaussian likelihood over pixel intensities: `loc` is the decoder's
-        # output and `scale` is one fixed sigma shared by every pixel, which
-        # keeps the reconstruction-to-KL ratio a hyper-parameter rather than
-        # something a learned sigma quietly anneals away.
+        # output and `scale` is one sigma shared by every pixel, fixed at 1 —
+        # which makes the reconstruction term plain MSE on the mean and the KL
+        # weight a true beta, instead of something a learned sigma quietly
+        # anneals away. Both are the defaults, spelled out here.
         observation=Normal,
-        scale_init=0.3,
+        scale_init=1.0,
         scale_learnable=False,
         # Raw: the model composes the observation parameter's activation on top
         # (the identity for a Normal's `loc`), so the MLP must not squash its
