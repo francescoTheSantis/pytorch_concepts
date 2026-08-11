@@ -36,7 +36,7 @@ hydra:
   sweeper:
     params:
       dataset: colormnist, celeba
-      kl: 1
+      kl: 0.1, 0.3, 1.0
       model.model_cls.latent_size: 32
       model.model_cls.embedding_size: 16
       model.model_cls.condition_encoder: true
@@ -46,10 +46,16 @@ seed: 42
 # Loss weights as named keys, sweepable without restating the whole
 # `loss.weights` list -- e.g. `-m kl=5,10`. Order is fixed by
 # conf/loss/cvae.yaml's `terms`; the numbers match its defaults.
-recon: 1.0    # -log p(input | z, concepts), which at sigma=1 IS 0.5 * MSE
-# 1.0, i.e. the true ELBO. The model config pins sigma=1, so the reconstruction
-# gradient carries no 1/sigma^2 factor and this weight means what it says. Kept
-# equal to the CBGM sweep so the two models' latents are regularised alike.
+recon: 1.0    # MSE( input, decoder(z, concepts) ), summed over pixels
+# SWEPT, because 1.0 measurably is not enough. The whole reconstruction budget
+# on colormnist is D*Var(x) ~ 100 nats, and a useful MNIST latent costs 15-40 --
+# so at kl=1.0 the trade is break-even and the encoder declines to take it.
+#
+# DIAGNOSTIC: KL sitting at exactly `0.5 * latent_size` (16.0 at latent_size=32)
+# means every dimension is pinned to the free-bits floor, i.e. the latent is
+# carrying nothing and the decoder is working from the concepts alone. That is
+# invisible in the total loss -- check `kl` in the per-term breakdown, not
+# val_loss. Lower `kl` until it rises above the floor.
 kl: 1.0       # KL( q(z|input,concepts) || p(z) )
 # NOT the CBGM's `alpha`. This one only fits the marginal p(c) used for
 # unconditional sampling; it competes with nothing (see conf/loss/cvae.yaml).

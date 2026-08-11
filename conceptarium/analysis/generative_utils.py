@@ -42,7 +42,7 @@ from conceptarium.utils import (
     setup_run_env,
     update_config_from_data,
 )
-from torch_concepts.nn import ReconstructionLoss
+from torch_concepts.nn import MSELoss
 from torch_concepts.nn.modules.mid.distributions import spec_for
 
 logger = logging.getLogger(__name__)
@@ -633,20 +633,27 @@ class Steerability(Metric):
         return results
 
 
-class ReconstructionNLL(Metric):
-    """Negative log-likelihood of the test set under the model's own observation CPD.
+class ReconstructionError(Metric):
+    """Squared reconstruction error on the test set, summed over pixels.
 
     Not from the paper — kept because it is the objective's own reconstruction
     term, and a steerability number is only meaningful for a model that fits.
+
+    Squared error rather than a log-likelihood because the observation is a
+    ``Delta``: the models predict the image and nothing else, so there is no
+    density to evaluate (see ``conf/model/cbgm.yaml``). Runs would have reported
+    ``reconstruction_nll`` before that change; ``write_results`` takes the union
+    of columns across runs, so an older row simply leaves this cell blank rather
+    than silently comparing two different quantities.
     """
 
-    name = "reconstruction_nll"
+    name = "reconstruction_error"
 
     def compute(self, ctx: EvalContext) -> Dict[str, float]:
         loader = ctx.datamodule.test_dataloader() or ctx.datamodule.val_dataloader()
-        reconstruction = ReconstructionLoss(variable="input")
+        reconstruction = MSELoss(variable="input")
         max_batches = ctx.cfg.get("max_eval_batches")
-        total, nll = 0, 0.0
+        total, error = 0, 0.0
         with torch.inference_mode():
             for index, batch in enumerate(loader):
                 if max_batches is not None and index >= max_batches:
@@ -655,9 +662,9 @@ class ReconstructionNLL(Metric):
                 c = batch["concepts"]["c"].to(ctx.device)
                 out = ctx.model(query=encoding_query(ctx.model, c), input=x)
                 out.extra = {"evidence": {"input": x}}
-                nll += reconstruction(out) * x.shape[0]
+                error += reconstruction(out) * x.shape[0]
                 total += x.shape[0]
-        return {"reconstruction_nll": float(nll) / max(total, 1),
+        return {"reconstruction_error": float(error) / max(total, 1),
                 "n_test_samples": float(total)}
 
 
@@ -692,7 +699,7 @@ class ConceptAccuracy(Metric):
 #: Every available metric, by the name a config uses to request it. Adding one is
 #: a :class:`Metric` subclass and a line here.
 METRICS: Dict[str, Metric] = {
-    m.name: m() for m in (FID, Steerability, ReconstructionNLL, ConceptAccuracy)
+    m.name: m() for m in (FID, Steerability, ReconstructionError, ConceptAccuracy)
 }
 
 

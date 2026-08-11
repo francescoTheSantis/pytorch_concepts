@@ -47,31 +47,31 @@ model_cls:
   context_hidden_size: 256
   context_norm: layer
 
-  # Gaussian likelihood over pixel intensities. `loc` is the decoder's raw
-  # output (identity-activated, so it must NOT squash its own output —
-  # unbounded is correct here, the network learns to land in [0, 1]).
-  # `scale` is ONE global sigma, not a second copy of the decoder.
+  # The decoder predicts the image and nothing else: a point mass, scored by
+  # MSELoss (see conf/loss/cbgm.yaml). `value` is the decoder's raw output —
+  # Delta constrains nothing, so no activation is composed on top and the
+  # decoder must not squash its own output either (unbounded is correct here,
+  # the network learns to land in [0, 1]).
   #
-  # FIXED at 1, which is what makes the reconstruction term plain MSE on the
-  # predicted mean: the Gaussian NLL is 0.5*(x - loc)^2 + 0.5*D*log(2*pi), and
-  # the constant drops out of every gradient (verified: decoder gradients are
-  # bit-identical to 0.5*MSE's). The KL weight in conf/cbgm.yaml is then a true
-  # beta, read directly rather than against a 1/sigma^2 factor.
+  # Delta rather than a Gaussian because a Gaussian here needs a sigma nothing
+  # estimates, and sigma is really a reconstruction weight in disguise: the NLL
+  # gradient carries 1/sigma^2. Pinning it at 1 to recover plain MSE also drags
+  # in a constant 0.5*D*log(2*pi) = 2161 nats (for D=2352), which is ~99% of the
+  # reported loss and defeats ReduceLROnPlateau's relative threshold — the LR
+  # gets cut long before convergence. A point mass has neither problem: no
+  # variance parameter is allocated at all, and the loss is the MSE itself.
+  # (A learned sigma is worse still: it settles at the residual RMS and keeps
+  # shrinking as the fit improves, annealing beta toward 0 with nothing in the
+  # config to show for it.)
   #
-  # Not learned, either: a learned sigma settles at the residual RMS and keeps
-  # shrinking as the fit improves, silently inflating reconstruction against the
-  # KL and annealing beta toward 0 — sharp reconstructions, garbage samples from
-  # the prior, and nothing in the config to show for it.
-  #
-  # Lowering sigma multiplies the reconstruction gradient by 1/sigma^2 (0.3 was
-  # the previous setting, i.e. ~11x). Prefer raising `recon` in conf/cbgm.yaml,
-  # which says the same thing where you can see it.
+  # NOTE this makes the objective MSE + beta*KL + alpha*concept — a regularised
+  # autoencoder rather than a likelihood model. The CVAE baseline uses the same
+  # observation, so the comparison is unaffected.
   observation:
     _target_: hydra.utils.get_class
-    path: torch.distributions.Normal
-  global_scale: true
-  scale_init: 1.0
-  scale_learnable: false
+    path: torch_concepts.distributions.Delta
+  # `global_scale` / `scale_init` / `scale_learnable` are deliberately absent:
+  # a Delta has no scale to allocate, so the model skips that head entirely.
 
   # Base families, restoring CBGM's own class defaults over the relaxed ones
   # `_commons` sets for the discriminative models. These plain families give

@@ -9,6 +9,7 @@ from torch import nn
 
 from .utils import GroupConfig
 from .outputs import ModelOutput, supervised_subset
+from .mid.distributions import spec_for
 from ..functional import concept_orthogonality
 from ...utils import instantiate_from_string
 from ...concept_graph import ConceptGraph
@@ -184,14 +185,29 @@ class CompositeLoss(TypeAwareLoss):
         return total
 
 
-class ReconstructionLoss(TypeAwareLoss):
-    """Negative log-likelihood of an **observed** variable under its own CPD.
+class MSELoss(TypeAwareLoss):
+    """Squared error between an **observed** variable and its predicted value.
 
-    The generative half of an ELBO: the model predicts the parameters of
-    ``variable`` and this scores the value that was actually observed against
-    them. Family-agnostic — a ``Bernoulli`` observation gives the usual
-    binary cross-entropy, a ``Normal`` one a Gaussian NLL — so it works for any
-    observed variable of any registered family, not just an image.
+    .. warning::
+       Not ``torch.nn.MSELoss``, and not a drop-in for it. That one takes
+       ``(input, target)`` tensors and averages over *every* element; this one
+       takes a whole :class:`ModelOutput`, finds the variable itself, and **sums
+       over the event, averaging only the batch** — the convention
+       :class:`KLDivergenceLoss` uses, so the two can be weighted against each
+       other in a :class:`CompositeLoss` and the weights mean what they say.
+       Averaging the event instead would divide this term by the event width
+       (2352, for a 3x28x28 image) and leave the KL to dominate by three orders
+       of magnitude.
+
+    Not tied to reconstruction: it scores any observed variable against the point
+    estimate the model reported for it, so it is equally usable for a regression
+    target or any other observed node.
+
+    The generative half of an ELBO-shaped objective, and the natural partner of a
+    ``Delta`` observation: the decoder predicts the mean and nothing else, with no
+    variance parameter anywhere in the model. Against a ``Normal`` or
+    ``Bernoulli`` observation it scores that family's point estimate instead
+    (``loc`` / ``probs``), so the objective is ``MSE + beta * KL`` either way.
 
     The observed value is read from ``output.extra['evidence']``, which
     :meth:`~torch_concepts.nn.modules.high.base.learner.BaseLearner.shared_step`
@@ -200,29 +216,56 @@ class ReconstructionLoss(TypeAwareLoss):
     Args:
         variable (str): Name of the observed variable to score. Default
             ``'input'``.
-        distribution (type, optional): Distribution family. Inferred from the
-            reported parameter names when omitted.
-        reduction (str): ``'mean'`` (default) averages the per-sample NLL over
-            the batch; ``'sum'`` sums it.
+        param (str, optional): Which reported quantity is the prediction. By
+            default the sole reported one (a ``Delta``'s ``value``), or the
+            family's ``primary_param`` when several are reported (a ``Normal``'s
+            ``loc``, a ``Bernoulli``'s ``probs``).
+        reduction (str): ``'mean'`` (default) averages the per-sample summed
+            squared error over the batch; ``'sum'`` sums it.
 
     Example:
-        >>> from torch_concepts.nn import ReconstructionLoss
-        >>> loss_fn = ReconstructionLoss(variable='input')
+        >>> from torch_concepts.nn import MSELoss
+        >>> loss_fn = MSELoss(variable='input')
+
+    See Also:
+        torch.nn.MSELoss : the elementwise-mean tensor loss this is *not*.
     """
 
     def __init__(
         self,
         variable: str = "input",
-        distribution: Optional[type] = None,
+        param: Optional[str] = None,
         reduction: str = "mean",
     ):
         super().__init__()
         self.variable = variable
-        self.distribution = distribution
+        self.param = param
         self.reduction = reduction
 
     def extra_repr(self) -> str:
         return f"variable={self.variable!r}"
+
+    def _prediction(self, params: Dict[str, torch.Tensor]) -> torch.Tensor:
+        """The reported quantity to score, resolved once per call."""
+        if self.param is not None:
+            if self.param not in params:
+                raise ValueError(
+                    f"MSELoss({self.variable!r}): {self.variable!r} reports "
+                    f"{sorted(params)}, not {self.param!r}."
+                )
+            return params[self.param]
+        if len(params) == 1:
+            return next(iter(params.values()))
+        # Several quantities reported: score the one carrying the point estimate.
+        family = _family_from_params(params, f"MSELoss({self.variable!r})")
+        primary = spec_for(family, f"MSELoss({self.variable!r})").primary_param
+        if primary not in params:
+            raise ValueError(
+                f"MSELoss({self.variable!r}): {family.__name__}'s point estimate is "
+                f"{primary!r}, which is not among the reported {sorted(params)}. "
+                "Pass `param=` explicitly."
+            )
+        return params[primary]
 
     def forward(self, output: ModelOutput, target=None) -> torch.Tensor:
         extra = output.extra or {}
@@ -230,27 +273,18 @@ class ReconstructionLoss(TypeAwareLoss):
         observed = evidence.get(self.variable)
         if observed is None:
             raise ValueError(
-                f"ReconstructionLoss: no observed value for {self.variable!r}. "
+                f"MSELoss: no observed value for {self.variable!r}. "
                 "It must be supplied as evidence — the learner forwards its "
                 "evidence dict to the loss under `output.extra['evidence']`."
             )
 
-        params = _variable_params(output.params, self.variable)
-        family = self.distribution or _family_from_params(
-            params, f"ReconstructionLoss({self.variable!r})"
-        )
-        # Parameters are flat ``(*leading, size)``; the observed value may still
-        # carry its event shape (an image stays ``(B, C, H, W)``), so reshape it
-        # to the parameters' layout before scoring.
-        reference = next(iter(params.values()))
-        flat = observed.reshape(reference.shape).to(reference.dtype)
-        # ``validate_args=False``: a Bernoulli likelihood over grey levels in
-        # [0, 1] is the standard VAE reconstruction term (it is exactly
-        # ``binary_cross_entropy``), but those values are outside Bernoulli's
-        # declared {0, 1} support and strict validation would reject them.
-        d = dist.Independent(family(**params, validate_args=False), 1)
-        nll = -d.log_prob(flat)
-        return nll.sum() if self.reduction == "sum" else nll.mean()
+        predicted = self._prediction(_variable_params(output.params, self.variable))
+        # Predictions are flat ``(*leading, size)``; the observed value may still
+        # carry its event shape (an image stays ``(B, C, H, W)``).
+        flat = observed.reshape(predicted.shape).to(predicted.dtype)
+        # Sum the event, reduce the batch — see the warning above.
+        per_sample = (predicted - flat).pow(2).flatten(start_dim=1).sum(-1)
+        return per_sample.sum() if self.reduction == "sum" else per_sample.mean()
 
 
 class KLDivergenceLoss(TypeAwareLoss):

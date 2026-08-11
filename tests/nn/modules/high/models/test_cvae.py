@@ -6,21 +6,20 @@ consequences — the decoder actually depends on them, the marginal ``p(c)`` is
 what the concept loss trains, and an unconditional draw still works, since that
 is what FID and steerability run on.
 """
-import math
-
 import pytest
 import torch
 import torch.nn as nn
 from torch.distributions import Bernoulli, MultivariateNormal, Normal
 
 from torch_concepts.annotations import Annotations
+from torch_concepts.distributions import Delta
 from torch_concepts.nn import (
     AncestralSamplingInference,
     ConceptLoss,
     ConditionalVariationalAutoencoder,
     MLP,
+    MSELoss,
     NLLProbLoss,
-    ReconstructionLoss,
 )
 from torch_concepts.nn.modules.high.models.cvae import ConceptEmbedding
 
@@ -279,46 +278,12 @@ class TestGeneration:
         assert out.samples["a"].shape == (5, 1)
         assert out.samples["digit"].shape == (5, 4)
 
-    def test_reconstruction_loss_is_finite(self, mixed_annotations):
+    def test_the_reconstruction_term_is_finite(self, mixed_annotations):
         model = build_model(mixed_annotations, observation=Normal)
         x = torch.rand(6, INPUT_SIZE)
         out = model(query=model.default_query(ground_truth(mixed_annotations)), input=x)
         out.extra = {"evidence": {"input": x}}
-        assert torch.isfinite(ReconstructionLoss(variable="input")(out))
-
-    def test_the_default_gaussian_likelihood_is_mse_on_the_mean(self, binary_annotations):
-        """At the default sigma=1 the Gaussian NLL is ``0.5*(x-loc)^2`` plus a
-        constant, so training is plain MSE on the predicted mean and the KL
-        weight is a true beta. Pinned because it is a claim the run configs'
-        loss weights are chosen against.
-        """
-        model = build_model(binary_annotations, observation=Normal)
-        scale_head = model.pgm.factors["input"].parametrization["scale"]
-        assert sum(p.numel() for p in scale_head.parameters()) == 0  # fixed
-
-        x = torch.rand(5, INPUT_SIZE)
-        query = model.default_query(ground_truth(binary_annotations, batch=5))
-
-        def decoder_grads(use_nll):
-            torch.manual_seed(0)
-            model.zero_grad()
-            out = model(query=query, input=x)
-            out.extra = {"evidence": {"input": x}}
-            loc = out.loc["input"].tensor
-            assert torch.equal(out.scale["input"].tensor,
-                               torch.ones_like(out.scale["input"].tensor))
-            loss = (ReconstructionLoss(variable="input")(out) if use_nll
-                    else 0.5 * ((loc - x) ** 2).sum(-1).mean())
-            loss.backward()
-            return float(loss), [p.grad.clone() for p in model.decoder.parameters()]
-
-        nll, nll_grads = decoder_grads(use_nll=True)
-        mse, mse_grads = decoder_grads(use_nll=False)
-
-        constant = 0.5 * INPUT_SIZE * math.log(2 * math.pi)
-        assert nll - mse == pytest.approx(constant, abs=1e-4)
-        for from_nll, from_mse in zip(nll_grads, mse_grads):
-            assert torch.allclose(from_nll, from_mse, atol=1e-6)
+        assert torch.isfinite(MSELoss(variable="input")(out))
 
     def test_gradients_reach_the_decoder_and_the_guide(self, binary_annotations):
         model = build_model(binary_annotations)
@@ -435,3 +400,51 @@ class TestGuideSharesOneBackbonePass:
         guide = self._model(binary_annotations, backbone).pgm.guides["z"]
         assert sum(m is backbone for m in guide.modules()) == 1
         assert sum(m is backbone for m in guide.trunk.modules()) == 1
+
+
+class TestDeltaObservation:
+    """The configured setting: the decoder predicts the image and nothing else.
+
+    A point mass allocates no scale head at all — which is the difference from
+    pinning a Gaussian's sigma to 1, where the head still exists and the NLL
+    still carries a `0.5 * D * log(2 * pi)` constant that swamps `val_loss`.
+    """
+
+    def test_no_scale_head_is_allocated(self, binary_annotations):
+        model = build_model(binary_annotations, observation=Delta)
+        assert sorted(model.pgm.factors["input"].parametrization) == ["value"]
+
+    def test_the_observation_reports_a_raw_value(self, binary_annotations):
+        model = build_model(binary_annotations, observation=Delta)
+        out = model(query=model.default_query(ground_truth(binary_annotations)),
+                    input=torch.rand(6, INPUT_SIZE))
+        assert out.value["input"].shape == (6, INPUT_SIZE)
+
+    def test_mse_loss_trains_it(self, binary_annotations):
+        """A point mass has no density to score, so MSE is the only option."""
+        torch.manual_seed(0)
+        model = build_model(binary_annotations, observation=Delta)
+        x = torch.rand(6, INPUT_SIZE)
+        query = model.default_query(ground_truth(binary_annotations))
+        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-2)
+
+        def step():
+            out = model(query=query, input=x)
+            out.extra = {"evidence": {"input": x}}
+            loss = MSELoss(variable="input")(out)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            return float(loss)
+
+        first = step()
+        for _ in range(50):
+            last = step()
+        assert last < first
+
+    def test_generation_returns_the_decoder_value(self, binary_annotations):
+        model = build_model(binary_annotations, observation=Delta)
+        model.eval()
+        engine = AncestralSamplingInference(model.pgm, p_int=1.0)
+        out = engine.query(query=["input", "a", "b"], evidence={}, n_samples=3)
+        assert out.value["input"].shape == (3, INPUT_SIZE)

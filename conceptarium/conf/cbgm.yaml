@@ -47,7 +47,7 @@ hydra:
     params:
       dataset: colormnist, celeba
       alpha: 50, 100
-      kl: 1
+      kl: 0.1, 0.3, 1.0
       p_int: 1
       model.model_cls.use_unknown: false 
       model.model_cls.latent_size: 32
@@ -58,11 +58,15 @@ seed: 42
 # Loss weights as named keys, sweepable without restating the whole
 # `loss.weights` list -- e.g. `-m alpha=1,5,10 kl=0.5,1`. Order is fixed
 # by conf/loss/cbgm.yaml's `terms`; the numbers match its defaults.
-recon: 1.0    # -log p(input | bottleneck), which at sigma=1 IS 0.5 * MSE
-# 1.0, i.e. the true ELBO. The model config pins sigma=1, so the reconstruction
-# gradient no longer carries the 1/sigma^2 factor that used to make this
-# implicitly ~11x larger than it looked (sigma was 0.3). The recon:KL ratio here
-# reproduces the previously tuned one: 10 * 0.3^2 = 0.9 ~= 1.
+recon: 1.0    # MSE( input, decoder(bottleneck) ), summed over pixels
+# SWEPT, because 1.0 measurably is not enough. The whole reconstruction budget
+# on colormnist is D*Var(x) ~ 100 nats, and a useful MNIST latent costs 15-40 --
+# so at kl=1.0 the trade is break-even and the encoder declines to take it.
+#
+# DIAGNOSTIC: KL sitting at exactly `0.5 * latent_size` (16.0 at latent_size=32)
+# means every dimension is pinned to the free-bits floor, i.e. the latent is
+# carrying nothing. That is invisible in the total loss -- check `kl` in the
+# per-term breakdown, not val_loss. Lower `kl` until it rises above the floor.
 #
 # For reference on the scale, the CBGM paper computes
 #   prior_loss = (-0.5 * sum(1 + logvar - mean^2 - exp(logvar))) / numel(mean) * 10

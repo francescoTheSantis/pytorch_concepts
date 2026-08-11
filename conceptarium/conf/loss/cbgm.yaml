@@ -3,7 +3,7 @@
 #
 # Four independent, reusable terms summed by CompositeLoss:
 #
-#   reconstruction  -log p(input | bottleneck)
+#   reconstruction  MSE( input, decoder(bottleneck) )
 #   KL              KL( q(z|input) || p(z) )
 #   concept         supervision on the bottleneck's concepts
 #   orthogonality   pushes the unsupervised context away from the
@@ -22,7 +22,11 @@ _target_: "torch_concepts.nn.CompositeLoss"
 weights: [1.0, 1.0, 5.0, 1.0]
 
 terms:
-  - _target_: "torch_concepts.nn.ReconstructionLoss"
+  # NOT torch.nn.MSELoss: this one sums the event and averages only the batch,
+  # the same convention KLDivergenceLoss uses, so `recon` and `kl` below are
+  # directly comparable. torch's elementwise mean would divide this term by
+  # 2352 and let the KL dominate by three orders of magnitude.
+  - _target_: "torch_concepts.nn.MSELoss"
     variable: input
 
   # `free_bits` floors each latent dimension's batch-averaged KL. Nothing in the

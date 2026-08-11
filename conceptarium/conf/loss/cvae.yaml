@@ -5,7 +5,7 @@
 # unsupervised context to push away from anything), and with the
 # concept term meaning something different:
 #
-#   reconstruction  -log p(input | z, concepts)
+#   reconstruction  MSE( input, decoder(z, concepts) )
 #   KL              KL( q(z|input,concepts) || p(z) )
 #   concept         fits the MARGINAL p(c)
 #
@@ -26,7 +26,11 @@ _target_: "torch_concepts.nn.CompositeLoss"
 weights: [1.0, 1.0, 1.0]
 
 terms:
-  - _target_: "torch_concepts.nn.ReconstructionLoss"
+  # NOT torch.nn.MSELoss: this one sums the event and averages only the batch,
+  # the same convention KLDivergenceLoss uses, so `recon` and `kl` below are
+  # directly comparable. torch's elementwise mean would divide this term by
+  # 2352 and let the KL dominate by three orders of magnitude.
+  - _target_: "torch_concepts.nn.MSELoss"
     variable: input
 
   # `free_bits` floors each latent dimension's batch-averaged KL. Nothing in the

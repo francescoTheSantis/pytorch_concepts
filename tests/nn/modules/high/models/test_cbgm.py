@@ -14,11 +14,12 @@ import torch.nn.functional as F
 from torch.distributions import Bernoulli, Normal
 
 from torch_concepts.annotations import Annotations
+from torch_concepts.distributions import Delta
 from torch_concepts.nn import (
     AncestralSamplingInference,
     ConceptBottleneckGenerativeModel,
     MLP,
-    ReconstructionLoss,
+    MSELoss,
 )
 
 pytest.importorskip("pyro", reason="CBGM's default inference engine needs pyro-ppl")
@@ -287,12 +288,12 @@ class TestNormalObservation:
         scale_params = sum(p.numel() for p in scale_head.parameters())
         assert scale_params >= decoder_params  # a full independent copy
 
-    def test_reconstruction_loss_is_finite(self, binary_annotations):
+    def test_the_reconstruction_term_is_finite(self, binary_annotations):
         model = self._model(binary_annotations)
         x = torch.rand(6, INPUT_SIZE)
         out = model(query=list(model.pgm.variables), input=x)
         out.extra = {"evidence": {"input": x}}
-        loss = ReconstructionLoss(variable="input")(out)
+        loss = MSELoss(variable="input")(out)
         assert torch.isfinite(loss)
 
     def test_generation_through_ancestral_sampling(self, binary_annotations):
@@ -393,7 +394,7 @@ class TestTeacherForcingRate:
         model.zero_grad()
         out = model(query=query, input=x)
         out.extra = {"evidence": {"input": x}}
-        ReconstructionLoss(variable="input")(out).backward()
+        MSELoss(variable="input")(out).backward()
 
         rows = weight.shape[0] // 2
         return weight.grad[:rows].norm(), weight.grad[rows:].norm()
@@ -573,3 +574,49 @@ class TestTemperatureAnnealing:
         model = self._model(binary_annotations, schedule=False)
         self._train_batches(model, 10)
         assert float(model.train_inference.temperature) == pytest.approx(1.0)
+
+
+class TestDeltaObservation:
+    """The configured setting (conf/model/cbgm.yaml): a point-mass observation.
+
+    Kept in step with the CVAE baseline, so the two models' reconstruction terms
+    stay on the same scale and their FIDs remain comparable.
+    """
+
+    def _model(self, annotations):
+        n_contexts = len(annotations.labels) + 1
+        return ConceptBottleneckGenerativeModel(
+            input_size=INPUT_SIZE,
+            annotations=annotations,
+            encoder=MLP(INPUT_SIZE, 16, LATENT_SIZE),
+            decoder=MLP(n_contexts * EMBEDDING_SIZE, 16, INPUT_SIZE),
+            latent_size=LATENT_SIZE,
+            embedding_size=EMBEDDING_SIZE,
+            observation=Delta,
+            plate=False,
+        )
+
+    def test_no_scale_head_is_allocated(self, binary_annotations):
+        model = self._model(binary_annotations)
+        assert sorted(model.pgm.factors["input"].parametrization) == ["value"]
+
+    def test_mse_loss_trains_it(self, binary_annotations):
+        torch.manual_seed(0)
+        model = self._model(binary_annotations)
+        x = torch.rand(6, INPUT_SIZE)
+        query = model.default_query(torch.ones(6, 2))
+        optimizer = torch.optim.AdamW(model.parameters(), lr=1e-2)
+
+        def step():
+            out = model(query=query, input=x)
+            out.extra = {"evidence": {"input": x}}
+            loss = MSELoss(variable="input")(out)
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
+            return float(loss)
+
+        first = step()
+        for _ in range(50):
+            last = step()
+        assert last < first

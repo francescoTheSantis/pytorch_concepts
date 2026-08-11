@@ -11,20 +11,22 @@ concept probabilities (exactly the CEM mixture), and the resulting bottleneck
 do not cover.
 
 Inference is variational: a Pyro guide ``q(z | x)`` supplies the encoder
-direction, so the model trains as a VAE with two extra terms — a concept loss
-on the bottleneck's concept probabilities and an orthogonality loss pushing the
-unsupervised context away from the concept contexts.
+direction, so the model trains with two extra terms beyond the usual
+reconstruction and KL — a concept loss on the bottleneck's concept
+probabilities and an orthogonality loss pushing the unsupervised context away
+from the concept contexts.
 
 Experiment settings:
 - Dataset: Color-MNIST via ``ColorMNISTDataModule``, two categorical concepts
   (``digit`` 10-way, ``color`` 2-way), images flattened to 3x28x28 = 2352
-  pixels modelled as a Gaussian observation.
+  pixels modelled as a ``Delta`` observation — the decoder predicts the image
+  and nothing else, scored by MSE.
 - Model: ``ConceptBottleneckGenerativeModel`` with MLP encoder/decoder.
 - Inference engine: Pyro ``VariationalInference`` with a guide on ``z``.
-- Loss: a ``CompositeLoss`` of ``recon + kl + alpha * concept + beta * orthogonality``.
+- Loss: a ``CompositeLoss`` of ``mse + kl + alpha * concept + beta * orthogonality``.
 
 Expected outcome:
-- The ELBO terms go down and both concept accuracies climb well above chance
+- The loss terms go down and both concept accuracies climb well above chance
   (0.1 for ``digit``, 0.5 for ``color``): about 0.94 and 1.00 after 30 epochs.
 - The reconstruction grid written at the end shows recognisable coloured
   digits.
@@ -36,7 +38,8 @@ References:
 import math
 
 import torch
-from torch.distributions import Normal
+
+from torch_concepts.distributions import Delta
 
 from torch_concepts import seed_everything
 from torch_concepts.data import ColorMNISTDataModule
@@ -48,7 +51,7 @@ from torch_concepts.nn import (
     MLP,
     NLLProbLoss,
     OrthogonalityLoss,
-    ReconstructionLoss,
+    MSELoss,
 )
 
 LATENT_SIZE = 32     # dim(z)
@@ -91,27 +94,25 @@ def main():
         encoder=MLP(n_pixels, 256, LATENT_SIZE),
         latent_size=LATENT_SIZE,
         embedding_size=EMBEDDING_SIZE,
-        # A Gaussian likelihood over pixel intensities: `loc` is the decoder's
-        # output and `scale` is one sigma shared by every pixel, fixed at 1 —
-        # which makes the reconstruction term plain MSE on the mean and the KL
-        # weight a true beta, instead of something a learned sigma quietly
-        # anneals away. Both are the defaults, spelled out here.
-        observation=Normal,
-        scale_init=1.0,
-        scale_learnable=False,
-        # Raw: the model composes the observation parameter's activation on top
-        # (the identity for a Normal's `loc`), so the MLP must not squash its
-        # own output — the network learns to land in [0, 1] itself.
+        # A point-mass observation: the decoder predicts the image and nothing
+        # else, so no variance parameter is allocated anywhere and the
+        # reconstruction term is the MSE itself. A Gaussian would need a sigma
+        # nothing estimates — and sigma is a reconstruction weight in disguise,
+        # since the NLL gradient carries 1/sigma^2.
+        observation=Delta,
+        # Raw: a Delta constrains nothing, so no activation is composed on top
+        # and the MLP must not squash its own output — the network learns to
+        # land in [0, 1] itself.
         decoder=MLP(context_size, 256, n_pixels, n_layers=2, activation="leaky_relu"),
     )
     print(model)
 
-    # The ELBO, as four independent terms. `param_for_discrete_var` is "probs"
+    # The objective, as four independent terms. `param_for_discrete_var` is "probs"
     # on this model, so the concept term reads `probs` and needs NLLProbLoss
     # rather than CrossEntropyLoss (which expects logits).
     loss_fn = CompositeLoss(
         terms=[
-            ReconstructionLoss(variable="input"),
+            MSELoss(variable="input"),
             KLDivergenceLoss(latents=["z"]),
             ConceptLoss(categorical=NLLProbLoss(), categorical_param="probs"),
             OrthogonalityLoss(variables=["mixing", "unknown"]),
@@ -131,7 +132,7 @@ def main():
             x = batch["inputs"]["x"].flatten(1)
             c = batch["concepts"]["c"]
             out = model(query=query, input=x)
-            # ReconstructionLoss scores the observed image, which the learner
+            # MSELoss scores the observed image, which the learner
             # normally publishes here; outside Lightning we pass it ourselves.
             out.extra = {"evidence": {"input": x}}
 
@@ -157,7 +158,7 @@ def main():
     with torch.no_grad():
         out = model(query=query, input=x)
     print("concept accuracy:", concept_accuracy(out, c, concept_names))
-    save_grid(x, out.loc["input"].clamp(0, 1), "cbgm_colormnist_reconstruction.png")
+    save_grid(x, out.value["input"].clamp(0, 1), "cbgm_colormnist_reconstruction.png")
 
 
 def save_grid(original, reconstruction, path):

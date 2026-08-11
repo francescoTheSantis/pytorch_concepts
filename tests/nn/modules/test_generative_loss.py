@@ -1,7 +1,7 @@
 """Tests for the composable generative loss terms.
 
 An ELBO is not a single concept term, so it is built from independent pieces:
-``CompositeLoss`` sums them, and each of ``ReconstructionLoss``,
+``CompositeLoss`` sums them, and each of ``MSELoss``,
 ``KLDivergenceLoss``, ``OrthogonalityLoss`` reads only a ``ModelOutput`` — so
 none of them is tied to a particular model.
 """
@@ -16,9 +16,9 @@ from torch_concepts.nn import (
     CompositeLoss,
     ConceptLoss,
     KLDivergenceLoss,
+    MSELoss,
     NLLProbLoss,
     OrthogonalityLoss,
-    ReconstructionLoss,
 )
 from torch_concepts.nn.functional import concept_orthogonality
 from torch_concepts.nn.modules.outputs import ModelOutput
@@ -71,36 +71,56 @@ def output():
     return out
 
 
-class TestReconstructionLoss:
-    def test_it_equals_the_binary_cross_entropy_of_the_observation(self, output):
-        mine = ReconstructionLoss(variable="input")(output)
-        reference = F.binary_cross_entropy(
-            output.probs["input"].tensor,
-            output.extra["evidence"]["input"],
-            reduction="none",
-        ).sum(-1).mean()
-        assert torch.allclose(mine, reference, atol=1e-5)
+class TestMSELoss:
+    """The partner of a ``Delta`` observation: no density, just squared error."""
 
-    def test_it_accepts_an_observation_that_kept_its_event_shape(self, output):
-        # An image arrives as (B, C, H, W) but the parameters are flat.
-        output.extra["evidence"]["input"] = torch.rand(B, 3, 2, 2)
-        assert ReconstructionLoss(variable="input")(output).ndim == 0
-
-    def test_a_gaussian_observation_uses_a_gaussian_likelihood(self):
+    def test_it_sums_the_event_and_averages_the_batch(self):
         out = ModelOutput()
-        out.loc = annotated(torch.zeros(B, 3), ["y"], [3], ["continuous"])
-        out.scale = annotated(torch.ones(B, 3), ["y"], [3], ["continuous"])
-        observed = torch.randn(B, 3)
+        predicted = torch.rand(B, 3)
+        observed = torch.rand(B, 3)
+        out.value = annotated(predicted, ["y"], [3], ["continuous"])
         out.extra = {"evidence": {"y": observed}}
-        expected = -torch.distributions.Independent(
-            Normal(torch.zeros(B, 3), torch.ones(B, 3)), 1
-        ).log_prob(observed).mean()
-        assert torch.allclose(ReconstructionLoss(variable="y")(out), expected, atol=1e-5)
+        expected = (predicted - observed).pow(2).sum(-1).mean()
+        assert torch.allclose(MSELoss(variable="y")(out), expected, atol=1e-6)
 
-    def test_a_missing_observation_is_a_clear_error(self, output):
-        output.extra = {}
+    def test_it_is_not_torch_mse_loss(self):
+        """The reduction differs by the event width — the whole point of having
+        our own: torch's elementwise mean would let the KL dominate."""
+        out = ModelOutput()
+        predicted, observed = torch.rand(B, 5), torch.rand(B, 5)
+        out.value = annotated(predicted, ["y"], [5], ["continuous"])
+        out.extra = {"evidence": {"y": observed}}
+        assert torch.allclose(
+            MSELoss(variable="y")(out), 5 * nn.MSELoss()(predicted, observed), atol=1e-6
+        )
+
+    @pytest.mark.parametrize(
+        "quantity, kind", [("value", "Delta"), ("loc", "Normal"), ("probs", "Bernoulli")]
+    )
+    def test_it_scores_each_family_s_point_estimate(self, quantity, kind):
+        """``value`` for a Delta, ``loc`` for a Normal, ``probs`` for a Bernoulli
+        — resolved from the family, so this is not Delta-specific."""
+        out = ModelOutput()
+        predicted, observed = torch.rand(B, 3), torch.rand(B, 3)
+        setattr(out, quantity, annotated(predicted, ["y"], [3], ["continuous"]))
+        if kind == "Normal":  # a Normal reports both, so `loc` must be picked
+            out.scale = annotated(torch.rand(B, 3) + 0.5, ["y"], [3], ["continuous"])
+        out.extra = {"evidence": {"y": observed}}
+        expected = (predicted - observed).pow(2).sum(-1).mean()
+        assert torch.allclose(MSELoss(variable="y")(out), expected, atol=1e-6)
+
+    def test_it_accepts_an_observation_that_kept_its_event_shape(self):
+        out = ModelOutput()
+        out.value = annotated(torch.rand(B, 12), ["y"], [12], ["continuous"])
+        out.extra = {"evidence": {"y": torch.rand(B, 3, 2, 2)}}
+        assert MSELoss(variable="y")(out).ndim == 0
+
+    def test_a_missing_observation_is_a_clear_error(self):
+        out = ModelOutput()
+        out.value = annotated(torch.rand(B, 3), ["y"], [3], ["continuous"])
+        out.extra = {}
         with pytest.raises(ValueError, match="no observed value"):
-            ReconstructionLoss(variable="input")(output)
+            MSELoss(variable="y")(out)
 
 
 class TestKLDivergenceLoss:
@@ -150,23 +170,23 @@ class TestNLLProbLoss:
 
 class TestCompositeLoss:
     def test_it_is_the_weighted_sum_of_its_terms(self, output):
-        recon, kl = ReconstructionLoss("input"), KLDivergenceLoss(["z"])
+        recon, kl = MSELoss("input"), KLDivergenceLoss(["z"])
         total = CompositeLoss(terms=[recon, kl], weights=[2.0, 3.0])(output)
         assert torch.allclose(total, 2.0 * recon(output) + 3.0 * kl(output), atol=1e-5)
 
     def test_weights_default_to_one(self, output):
-        recon, kl = ReconstructionLoss("input"), KLDivergenceLoss(["z"])
+        recon, kl = MSELoss("input"), KLDivergenceLoss(["z"])
         assert torch.allclose(
             CompositeLoss(terms=[recon, kl])(output),
             recon(output) + kl(output), atol=1e-5,
         )
 
     def test_terms_with_and_without_a_target_compose(self, output):
-        # ConceptLoss.forward takes (output, target); ReconstructionLoss does too,
+        # ConceptLoss.forward takes (output, target); MSELoss does too,
         # but WeightedConceptLoss takes only (output) — dispatch is by signature.
         loss = CompositeLoss(
             terms=[
-                ReconstructionLoss("input"),
+                MSELoss("input"),
                 ConceptLoss(categorical=NLLProbLoss(), categorical_param="probs"),
             ],
             weights=[1.0, 5.0],
@@ -175,11 +195,11 @@ class TestCompositeLoss:
 
     def test_mismatched_weights_are_rejected(self):
         with pytest.raises(ValueError, match="Number of weights"):
-            CompositeLoss(terms=[ReconstructionLoss()], weights=[1.0, 2.0])
+            CompositeLoss(terms=[MSELoss()], weights=[1.0, 2.0])
 
     def test_it_is_a_type_aware_loss_so_the_learner_accepts_it(self, output):
         from torch_concepts.nn.modules.loss import TypeAwareLoss
-        assert isinstance(CompositeLoss(terms=[ReconstructionLoss()]), TypeAwareLoss)
+        assert isinstance(CompositeLoss(terms=[MSELoss()]), TypeAwareLoss)
 
 
 class TestUnsupervisedVariablesAreSkipped:

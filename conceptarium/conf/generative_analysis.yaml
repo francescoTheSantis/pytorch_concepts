@@ -90,7 +90,7 @@ accelerator: auto        # auto | cpu | cuda
 #
 #   fid                 Frechet distance, generated vs real (paper Table 2)
 #   steerability        does do(concept) put the concept in the output? (Table 1)
-#   reconstruction_nll  the objective's own reconstruction term
+#   reconstruction_error  the objective's own reconstruction term (summed SE)
 #   concept_accuracy    the model's own ConceptMetrics on the test split
 compute_metrics: null
 
@@ -127,7 +127,7 @@ classifier_width: 16
 # many samples are scored. Lower it if the analysis runs out of memory.
 eval_batch_size: 128
 
-# Cap the test-set passes (reconstruction_nll, concept_accuracy, and the judge's
+# Cap the test-set passes (reconstruction_error, concept_accuracy, and the judge's
 # scoring) at this many batches; null scores the whole split.
 max_eval_batches: null
 

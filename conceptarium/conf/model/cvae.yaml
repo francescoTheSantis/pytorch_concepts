@@ -34,26 +34,28 @@ model_cls:
   # knowing its concepts.
   condition_encoder: true
 
-  # Gaussian likelihood over pixel intensities, identical to cbgm.yaml so the
-  # two models' reconstruction terms are on the same scale and their FIDs are
-  # comparable. `loc` is the decoder's raw output (identity-activated, so the
-  # decoder must NOT squash it); `scale` is ONE global sigma, FIXED at 1.
+  # The decoder predicts the image and nothing else: a point mass, scored by
+  # MSELoss (see conf/loss/cvae.yaml). Identical to cbgm.yaml so the two models'
+  # reconstruction terms are on the same scale and their FIDs are comparable.
+  # `value` is the decoder's raw output — Delta constrains nothing, so no
+  # activation is composed on top and the decoder must not squash it either.
   #
-  # sigma=1 is what makes the reconstruction term plain MSE on the predicted
-  # mean: the Gaussian NLL is 0.5*(x - loc)^2 + 0.5*D*log(2*pi), so the constant
-  # drops out of every gradient (verified: decoder gradients are bit-identical
-  # to 0.5*MSE's). It also makes the KL weight a true beta rather than something
-  # that has to be read against a 1/sigma^2 factor.
+  # Delta rather than a Gaussian because a Gaussian here needs a sigma nothing
+  # estimates, and sigma is really a reconstruction weight in disguise: the NLL
+  # gradient carries 1/sigma^2. Pinning it at 1 to recover plain MSE also drags
+  # in a constant 0.5*D*log(2*pi) = 2161 nats (for D=2352), which is ~99% of the
+  # reported loss and defeats ReduceLROnPlateau's relative threshold — the LR
+  # gets cut long before convergence. A point mass has neither problem: no
+  # variance parameter is allocated at all, and the loss is the MSE itself.
   #
-  # Not learned: a learned sigma settles at the residual RMS and keeps inflating
-  # reconstruction against the KL as the fit improves — sharp reconstructions,
-  # garbage samples, and none of it visible in any loss weight.
+  # NOTE this makes the objective MSE + beta*KL — a regularised autoencoder
+  # rather than a likelihood model. Both models use it, so the comparison is
+  # unaffected, but `reconstruction_mse` is not a log-likelihood.
   observation:
     _target_: hydra.utils.get_class
-    path: torch.distributions.Normal
-  global_scale: true
-  scale_init: 1.0
-  scale_learnable: false
+    path: torch_concepts.distributions.Delta
+  # `global_scale` / `scale_init` / `scale_learnable` are deliberately absent:
+  # a Delta has no scale to allocate, so the model skips that head entirely.
 
   # Plain (non-relaxed) families, overriding the relaxed ones `_commons` sets
   # for the discriminative models — same as cbgm.yaml. The concepts are observed
