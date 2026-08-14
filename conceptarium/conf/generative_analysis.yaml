@@ -60,6 +60,7 @@ filters:
   model.model_cls._target_:
     - torch_concepts.nn.ConceptBottleneckGenerativeModel
     - torch_concepts.nn.ConditionalVariationalAutoencoder
+    - torch_concepts.nn.ClassifierFreeGuidedDiffusion
 
 # true (default): analyse every matching run -- what comparing a sweep needs.
 # false: only the newest. Ignored when `job_dir` is given explicitly.

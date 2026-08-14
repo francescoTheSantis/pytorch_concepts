@@ -1,0 +1,100 @@
+# =============================================================
+# Train a classifier-free guided diffusion model on the concepts.
+#
+# The third generative baseline, to run against --config-name
+# cbgm and --config-name cvae: same datasets, same analysis. Both
+# of those decode in one forward pass, so a gap to the data could
+# be their concept structure or just a weak decoder. This model
+# has no concept bottleneck (like the CVAE) and a strong
+# generator, so the three together separate the two explanations.
+#
+#   cd conceptarium
+#   python run_experiment.py --config-name cfg_diffusion -m \
+#       trainer.accelerator=gpu trainer.devices=1
+#
+# Restrict any axis on the command line, e.g.
+# `dataset=colormnist guidance=1.0` (a single value on every axis
+# drops -m).
+#
+# Then the figures and metrics, alongside the CBGM and CVAE runs
+# -- the analysis discovers all three and averages per model:
+#   python conceptarium/analysis/run_generative_analysis.py
+#
+# Requires `pyro-ppl`, for the straight-through family the
+# label-drop mask uses (a soft mask would blend the real and null
+# conditions instead of dropping). Not in the conceptarium
+# environment files -- same as cvae.yaml.
+# =============================================================
+defaults:
+  - _default
+  - override /model: cfg_diffusion
+  - override /loss: cfg_diffusion
+  - override /dataset: colormnist
+  - _self_
+
+hydra:
+  job:
+    name: cfg_diffusion
+  sweeper:
+    params:
+      dataset: colormnist, celeba
+      guidance: 1.0, 3.0, 5.0
+      model.model_cls.embedding_size: 16
+
+seed: 42
+
+# Guidance strength `s`, swept: it is the one knob that trades FID against
+# steerability, which is exactly the trade-off the comparison is about. s=0 is
+# plain conditional sampling; higher pushes generations harder onto the
+# condition and (past some point) collapses their diversity. Sampling-time
+# only -- it changes no weights, so a sweep over it could in principle reuse
+# one checkpoint.
+guidance: 3.0
+model:
+  model_cls:
+    guidance_scale: ${guidance}
+
+# Loss weights as named keys, sweepable without restating the whole
+# `loss.weights` list. Order is fixed by conf/loss/cfg_diffusion.yaml's
+# `terms`; the numbers match its defaults.
+denoise: 1.0  # || eps_hat - eps_target ||^2
+# Only fits the marginal p(c) used for unconditional sampling; it competes with
+# nothing (see conf/loss/cfg_diffusion.yaml).
+alpha: 1.0
+
+loss:
+  weights:   # block style: `[${denoise}, ...]` is a YAML flow-sequence parse error
+    - ${denoise}
+    - ${alpha}
+
+# BOTH must stay false, for the same reason as cbgm.yaml and cvae.yaml:
+# precomputing embeddings replaces the pixels in the dataset with backbone
+# features, and the pixels are what this model generates.
+precompute_embeddings: False
+force_precompute: False
+
+# MUST be null. The U-Net denoises raw pixels; a backbone would sit in the
+# optimiser and the checkpoint without ever running, so the model raises rather
+# than accept one. This is the one structural difference from the cbgm/cvae
+# configs, which need a backbone for their guide.
+dataset:
+  backbone: null
+  datamodule:
+    batch_size: 128
+
+trainer:
+  # Diffusion training is slower to converge than an autoencoder's: each step
+  # sees one timestep out of `n_steps`, so a given noise level is only visited
+  # every few hundred batches.
+  max_epochs: 100
+  monitor: "val_loss"
+  patience: 20
+  accelerator: "auto"
+  logger: null       # null / wandb
+  log_model: false
+
+matmul_precision: medium
+
+# false so the run is written to runs.csv.
+debug: false
+notes: cfg_diffusion

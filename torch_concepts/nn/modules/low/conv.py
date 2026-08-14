@@ -6,6 +6,10 @@ many outputs is ruinous — CelebA at native resolution is 116,412 pixels, so th
 last layer alone would carry ~60M parameters. :class:`ConvDecoder` spends those
 parameters on a stack of transposed convolutions instead, and flattens only at
 the very end so the CPD contract is unchanged.
+
+:class:`ConditionalUNet` is the image-to-image counterpart, for a variable whose
+CPD maps a picture to another picture of the same shape — a diffusion model's
+noise prediction. It flattens at the same boundary and for the same reason.
 """
 
 from __future__ import annotations
@@ -260,3 +264,223 @@ class ConvDecoder(nn.Module):
             f"in_features={self.in_features}, out_shape={self.out_shape}, "
             f"base_size={self.base_size}"
         )
+
+
+def sinusoidal_embedding(steps: torch.Tensor, width: int) -> torch.Tensor:
+    """Transformer-style positional embedding of an integer timestep.
+
+    ``(*leading, 1) -> (*leading, width)``. A diffusion U-Net has to condition on
+    ``t``, and feeding the raw integer works badly: the network sees one scalar
+    that has to modulate every layer, and neighbouring timesteps are almost
+    indistinguishable at the scale the rest of its inputs live on. A bank of
+    sinusoids at geometrically spaced frequencies separates adjacent steps while
+    keeping distant ones smoothly related.
+
+    >>> import torch
+    >>> from torch_concepts.nn.modules.low.conv import sinusoidal_embedding
+    >>> sinusoidal_embedding(torch.tensor([[0.], [500.]]), 64).shape
+    torch.Size([2, 64])
+    """
+    if width % 2:
+        raise ValueError(f"sinusoidal_embedding: width must be even, got {width}.")
+    half = width // 2
+    freqs = torch.exp(
+        -math.log(10_000.0)
+        * torch.arange(half, device=steps.device, dtype=torch.float32)
+        / half
+    )
+    angles = steps.reshape(*steps.shape[:-1], 1).float() * freqs
+    return torch.cat([angles.sin(), angles.cos()], dim=-1)
+
+
+class _ResBlock(nn.Module):
+    """Two 3x3 convolutions with the conditioning added between them.
+
+    The conditioning enters as a per-channel *shift* predicted from the embedding
+    — the standard way a diffusion U-Net is told the timestep and the class. It
+    is applied after the first convolution rather than concatenated at the input
+    so that every block, at every resolution, is conditioned rather than only the
+    first one.
+    """
+
+    def __init__(self, in_channels: int, out_channels: int, embedding_size: int,
+                 norm: str, activation) -> None:
+        super().__init__()
+        self.norm1 = _norm_layer(norm, in_channels) or nn.Identity()
+        self.conv1 = nn.Conv2d(in_channels, out_channels, 3, padding=1)
+        self.embed = nn.Linear(embedding_size, out_channels)
+        self.norm2 = _norm_layer(norm, out_channels) or nn.Identity()
+        self.conv2 = nn.Conv2d(out_channels, out_channels, 3, padding=1)
+        self.act = activation()
+        # 1x1 projection only when the widths differ, so an unchanged width keeps
+        # a true identity path.
+        self.skip = (
+            nn.Conv2d(in_channels, out_channels, 1)
+            if in_channels != out_channels else nn.Identity()
+        )
+
+    def forward(self, x: torch.Tensor, emb: torch.Tensor) -> torch.Tensor:
+        h = self.conv1(self.act(self.norm1(x)))
+        h = h + self.embed(emb)[..., None, None]
+        h = self.conv2(self.act(self.norm2(h)))
+        return h + self.skip(x)
+
+
+class ConditionalUNet(nn.Module):
+    """Image-to-image U-Net conditioned on a timestep and a condition vector.
+
+    The network a diffusion model's denoising CPD wraps: it reads a noised image,
+    the timestep it was noised to, and the (possibly nulled) condition, and
+    predicts the noise that was added. Input and output are the *same* shape,
+    which is what distinguishes it from :class:`ConvDecoder`.
+
+    Both conditioning signals are reduced to one embedding — the timestep through
+    :func:`sinusoidal_embedding`, the condition through a linear map, summed —
+    and that single vector shifts every residual block. Summing rather than
+    concatenating is what makes the null condition (``y = 0``) a clean
+    "no information" input: it contributes its layer's bias and nothing else.
+
+    Flattening is at the boundary only: the CPD contract is a flat
+    ``(*leading, C*H*W)`` in and out, and the convolutions see ``(B, C, H, W)``
+    in between.
+
+    Parameters
+    ----------
+    shape : tuple of int
+        ``(C, H, W)`` of the image. Input and output both.
+    condition_size : int
+        Width of the condition vector. ``0`` for an unconditional model.
+    hidden_channels : sequence of int
+        Width per resolution level, coarsest last. Each level after the first
+        halves the resolution, so ``(64, 128)`` is one downsample.
+    embedding_size : int, default 128
+        Width of the combined timestep/condition embedding.
+    norm : str, default ``'group'``
+        See :func:`_norm_layer`. ``'group'`` for the same reason
+        :class:`ConvDecoder` prefers it.
+    activation : type, default ``nn.SiLU``
+        Activation class.
+
+    Attributes
+    ----------
+    out_features : int
+        ``C * H * W`` — the flat width, so a CPD can be sized from the module.
+
+    Examples
+    --------
+    >>> import torch
+    >>> from torch_concepts.nn import ConditionalUNet
+    >>> unet = ConditionalUNet(shape=(3, 32, 32), condition_size=16,
+    ...                        hidden_channels=(32, 64))
+    >>> x = torch.randn(2, 3 * 32 * 32)
+    >>> t = torch.tensor([[10.], [900.]])
+    >>> y = torch.randn(2, 16)
+    >>> unet(x, t, y).shape          # same flat width back
+    torch.Size([2, 3072])
+    """
+
+    def __init__(
+        self,
+        shape: Union[Tuple[int, ...], torch.Size],
+        condition_size: int,
+        hidden_channels: Sequence[int] = (64, 128),
+        embedding_size: int = 128,
+        norm: str = "group",
+        activation: type = nn.SiLU,
+    ) -> None:
+        super().__init__()
+        shape = tuple(int(s) for s in shape)
+        if len(shape) != 3:
+            raise ValueError(
+                f"ConditionalUNet: shape must be (channels, height, width), got {shape}."
+            )
+        if not hidden_channels:
+            raise ValueError("ConditionalUNet: hidden_channels must be non-empty.")
+        channels, height, width = shape
+        downsamples = len(hidden_channels) - 1
+        if height % (2 ** downsamples) or width % (2 ** downsamples):
+            raise ValueError(
+                f"ConditionalUNet: {height}x{width} is not divisible by "
+                f"2**{downsamples}, which {len(hidden_channels)} levels require. "
+                "Use fewer levels, or resize the images."
+            )
+
+        self.shape = shape
+        self.embedding_size = int(embedding_size)
+        self.condition_size = int(condition_size)
+        self.out_features = channels * height * width
+
+        self.time_mlp = nn.Sequential(
+            nn.Linear(embedding_size, embedding_size),
+            activation(),
+            nn.Linear(embedding_size, embedding_size),
+        )
+        # No bias: `y = 0` must contribute exactly nothing, so that the null
+        # condition is the *absence* of a signal rather than a learned constant
+        # competing with the timestep. The blocks' own biases supply the offset.
+        self.condition_mlp = (
+            nn.Linear(condition_size, embedding_size, bias=False)
+            if condition_size else None
+        )
+
+        widths = list(hidden_channels)
+        self.stem = nn.Conv2d(channels, widths[0], 3, padding=1)
+
+        block = lambda i, o: _ResBlock(i, o, embedding_size, norm, activation)
+        self.down = nn.ModuleList(
+            block(a, b) for a, b in zip(widths, widths[1:])
+        )
+        self.downsample = nn.ModuleList(
+            nn.Conv2d(w, w, 3, stride=2, padding=1) for w in widths[1:]
+        )
+        self.middle = block(widths[-1], widths[-1])
+        self.upsample = nn.ModuleList(
+            nn.ConvTranspose2d(w, w, 4, stride=2, padding=1) for w in widths[1:]
+        )
+        # Each up block consumes the skip concatenated onto its input, hence the
+        # doubled fan-in.
+        self.up = nn.ModuleList(
+            block(b * 2, a) for a, b in zip(widths, widths[1:])
+        )
+        self.out_norm = _norm_layer(norm, widths[0]) or nn.Identity()
+        self.out_act = activation()
+        # Zero-initialised final convolution: the network starts by predicting
+        # exactly zero noise, so the first training steps move it off a neutral
+        # point instead of off whatever the initialisation happened to emit.
+        self.out_conv = nn.Conv2d(widths[0], channels, 3, padding=1)
+        nn.init.zeros_(self.out_conv.weight)
+        nn.init.zeros_(self.out_conv.bias)
+
+    def forward(
+        self,
+        x: torch.Tensor,
+        t: torch.Tensor,
+        y: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
+        emb = self.time_mlp(sinusoidal_embedding(t, self.embedding_size))
+        if self.condition_mlp is not None and y is not None:
+            emb = emb + self.condition_mlp(y)
+
+        # Convolutions take exactly one batch axis; fold any extra leading dims.
+        leading = x.shape[:-1]
+        h = x.reshape(-1, *self.shape)
+        emb = emb.reshape(-1, self.embedding_size)
+
+        h = self.stem(h)
+        skips = []
+        for block, down in zip(self.down, self.downsample):
+            h = block(h, emb)
+            skips.append(h)
+            h = down(h)
+        h = self.middle(h, emb)
+        for block, up, skip in zip(
+            reversed(self.up), reversed(self.upsample), reversed(skips)
+        ):
+            h = up(h)
+            h = block(torch.cat([h, skip], dim=1), emb)
+
+        h = self.out_conv(self.out_act(self.out_norm(h)))
+        return h.reshape(*leading, self.out_features)
+
+    def extra_repr(self) -> str:
+        return f"shape={self.shape}, condition_size={self.condition_size}"

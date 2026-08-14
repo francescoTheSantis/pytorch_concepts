@@ -1,0 +1,110 @@
+# =============================================================
+# Classifier-free guided diffusion, conditioned on the concepts.
+#
+# The third generative baseline, against conf/model/cbgm.yaml and
+# conf/model/cvae.yaml. Both of those decode an image in one
+# forward pass, so a gap between them and the data could be their
+# concept structure OR just a weak decoder; a diffusion model on
+# the same concepts, scored by the same FID and steerability,
+# separates the two.
+#
+# As with the CVAE there are no tasks: every concept is a
+# conditioning variable, so `task_names` must NOT be set.
+#
+# `input_size` is injected by update_config_from_data, and
+# `annotations` / `graph` / `backbone` / `loss` / `metrics` are
+# passed by run_experiment.py -- none of them belong here.
+# =============================================================
+defaults:
+  - _commons
+  - _self_
+
+model_cls:
+  _target_: "torch_concepts.nn.ClassifierFreeGuidedDiffusion"
+
+  plate: false         # one variable per concept, so each can be intervened on
+  embedding_size: 16   # m, width of ONE concept's embedding
+
+  # --- the forward process -------------------------------------------------
+  # T and the beta endpoints go together: beta_end is calibrated so that the
+  # cumulative product reaches ~0 by step T, i.e. so the noisiest timestep
+  # really is pure noise. The DDPM defaults (1e-4, 0.02) are for T=1000; at
+  # T=400 the same endpoints leave alpha_bar_T around 0.02 rather than 4e-5,
+  # so beta_end is raised to compensate. Change one, recompute the other --
+  # a schedule that never reaches noise means sampling starts from N(0, I) at
+  # a timestep the model was never trained on.
+  n_steps: 400
+  beta_start: 0.0001
+  beta_end: 0.05
+
+  # Probability of dropping the condition on a row. The standard value:
+  # guidance needs enough unconditional rows to learn p(x), but every dropped
+  # row is one the conditional model does not see.
+  p_uncond: 0.1
+
+  # --- the network ---------------------------------------------------------
+  # Width per resolution level, coarsest last; each level after the first
+  # halves the resolution. Two levels on 28x28 needs 28 % 2 == 0, which holds.
+  hidden_channels: [64, 128]
+
+  # --- sampling ------------------------------------------------------------
+  # s in (1+s)*eps_cond - s*eps_uncond. NOT the other common convention,
+  # w = 1 + s, which writes the same combination as (1-w)*eps_uncond +
+  # w*eps_cond -- s=0 here is plain conditional sampling, not unconditional.
+  guidance_scale: 3.0
+
+  # Reverse steps at generation time, strided out of the 400 the model trained
+  # at. Valid because the DDIM update is defined between any two noise levels,
+  # and necessary because FID draws thousands of samples and every step costs
+  # a U-Net evaluation.
+  sample_steps: 50
+
+  # MUST stay 0 for the analysis to mean anything. Steerability replays one
+  # starting noise with a single concept changed and compares the two
+  # generations; with eta > 0 the reverse process injects fresh noise at every
+  # step, which swamps that shared starting point and leaves the metric
+  # measuring randomness. eta=1 on the full grid is DDPM's Algorithm 2 and is
+  # the right setting for qualitative samples, not for the numbers.
+  eta: 0.0
+
+  # Clamp the predicted clean image each step. At the noisiest steps alpha_bar
+  # is ~1e-4, so recovering x0 divides by ~0.01 and lands far outside the data
+  # range; unclamped that drags the whole trajectory off.
+  clip: [0.0, 1.0]
+
+  # Plain (non-relaxed) families, overriding the relaxed ones `_commons` sets
+  # for the discriminative models -- same as cvae.yaml. The concepts are
+  # observed during training, so the relaxation would only ever apply to an
+  # UNCONDITIONAL draw from the learned marginal p(c) (generation, and FID).
+  variable_distributions:
+    binary:
+      _target_: hydra.utils.get_class
+      path: torch.distributions.Bernoulli
+    categorical:
+      _target_: hydra.utils.get_class
+      path: torch.distributions.OneHotCategorical
+    continuous:
+      _target_: hydra.utils.get_class
+      path: torch.distributions.Normal
+  variable_dist_kwargs:
+    binary: null
+    categorical: null
+    continuous: null
+
+  # One ancestral pass, for BOTH train and eval -- t, eps and the label-drop
+  # mask are all graph nodes, so nothing engine-specific is left. Eval runs the
+  # same engine on purpose: val_loss then measures the objective training
+  # minimises. Generation is NOT that computation, so the reverse process lives
+  # on `model.sampler` (built from the arguments above) rather than as the eval
+  # engine -- wiring it here would leave val_loss uncomputable, since the
+  # sampler reports images and the loss needs eps_hat and eps_target.
+  inference:
+    _target_: "torch_concepts.nn.CFGTrainingEngine"
+    _partial_: true
+  train_inference: ${model.model_cls.inference}
+
+# MUST be null. The U-Net denoises raw pixels, so a feature extractor would sit
+# in the optimiser and the checkpoint without ever running -- the model raises
+# rather than let that happen silently. Pair with `dataset.backbone=null` in the
+# experiment config.
+latent_encoder: null

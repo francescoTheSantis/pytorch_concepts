@@ -383,6 +383,24 @@ SPECS: Dict[type, DistributionSpec] = {
         param_activations={"scale": _softplus_activation},
         wrap_independent=True,
     ),
+    dist.Uniform: DistributionSpec(
+        param_sizes={"low": _per_element, "high": _per_element},
+        valid_param_sets=(frozenset({"low", "high"}),),
+        default_params=("low", "high"),
+        # A Uniform has no mean-like parameter, and nothing here propagates one:
+        # the family exists for *roots that must be drawn* (a diffusion model's
+        # timestep), which only the sampling engines resolve. ``low`` is named
+        # primary so the contract is total, not because it is a point estimate —
+        # a deterministic pass over a Uniform root is meaningless either way.
+        primary_param="low",
+        activations={"low": _identity, "high": _identity},
+        # No ``param_activations``: both bounds come from a prior module that
+        # already emits valid values, and there is no ordering constraint a
+        # per-parameter activation could enforce (it would need both at once).
+        wrap_independent=True,
+        # ``relaxed`` stays None: Uniform.rsample is already reparameterised, so
+        # ``build_relaxed_distribution`` falls through to the exact family.
+    ),
     dist.MultivariateNormal: DistributionSpec(
         param_sizes={"loc": _per_element, "scale_tril": _lower_triangular},
         valid_param_sets=(frozenset({"loc", "scale_tril"}),),

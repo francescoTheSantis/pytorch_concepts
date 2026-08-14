@@ -9,19 +9,27 @@ is a *subclass* of its plain relaxed base, so without its own ``SPECS`` key it
 resolves to the base spec and silently samples soft
 (``test_straight_through_families_are_not_shadowed_by_their_base``).
 """
-import pyro.distributions as pyro_dist
+import pytest
 import torch
 import torch.nn as nn
 import torch.distributions as dist
 
-from torch_concepts.distributions import Delta
-from torch_concepts.nn.modules.low.priors import FixedPrior
-from torch_concepts.nn.modules.mid.distributions import spec_for
-from torch_concepts.nn.modules.mid.variable import ConceptVariable
-from torch_concepts.nn.modules.mid.factors.cpd import ParametricCPD
-from torch_concepts.nn.modules.mid.graph.bayesian_network import BayesianNetwork
-from torch_concepts.nn.modules.mid.inference.torch.ancestral import AncestralSamplingInference
-from torch_concepts.nn.modules.mid.inference.torch.utils import sample_from
+# The straight-through families ARE Pyro's -- torch ships no equivalent -- so
+# this whole module is about an optional dependency. `importorskip` rather than a
+# plain import: an unguarded module-level import is a *collection* error, which
+# aborts the entire run, where a skip costs only this file.
+pyro_dist = pytest.importorskip(
+    "pyro.distributions", reason="the straight-through families are pyro's"
+)
+
+from torch_concepts.distributions import Delta  # noqa: E402
+from torch_concepts.nn.modules.low.priors import FixedPrior  # noqa: E402
+from torch_concepts.nn.modules.mid.distributions import spec_for  # noqa: E402
+from torch_concepts.nn.modules.mid.variable import ConceptVariable  # noqa: E402
+from torch_concepts.nn.modules.mid.factors.cpd import ParametricCPD  # noqa: E402
+from torch_concepts.nn.modules.mid.graph.bayesian_network import BayesianNetwork  # noqa: E402
+from torch_concepts.nn.modules.mid.inference.torch.ancestral import AncestralSamplingInference  # noqa: E402
+from torch_concepts.nn.modules.mid.inference.torch.utils import sample_from  # noqa: E402
 
 ST_BERNOULLI = pyro_dist.RelaxedBernoulliStraightThrough
 ST_CATEGORICAL = pyro_dist.RelaxedOneHotCategoricalStraightThrough

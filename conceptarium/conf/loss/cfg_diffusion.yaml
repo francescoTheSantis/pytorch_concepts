@@ -1,0 +1,47 @@
+# =============================================================
+# Denoising objective for classifier-free guided diffusion.
+#
+#   denoising   || eps_hat - eps_target ||^2   (eps-prediction)
+#   concept     fits the MARGINAL p(c)
+#
+# Two terms, not three: there is no KL. A diffusion model has no
+# variational posterior to regularise -- the "encoder" is the
+# fixed forward process, which has no parameters -- so the ELBO
+# collapses to the denoising regression alone.
+#
+# As in conf/loss/cvae.yaml the concept term does NOT train a
+# concept predictor: this model reads its concepts and never
+# infers them. It fits the learnable marginal to the empirical
+# frequencies, which is what makes an *unconditional* draw (for
+# FID) produce a plausible condition. Its weight is therefore not
+# a trade-off against the denoising term; 1.0 is fine.
+#
+# The model sets `param_for_discrete_var = "probs"`, so the
+# concept term must read `probs` -- hence NLLProbLoss / BCELoss
+# rather than CrossEntropyLoss / BCEWithLogitsLoss.
+# =============================================================
+_target_: "torch_concepts.nn.CompositeLoss"
+
+weights: [1.0, 1.0]
+
+terms:
+  # Two NODES, not a node against the evidence: the target is
+  # eps_target, which is computed inside the graph from the sampled
+  # noise and timestep and so is never available as evidence. It is
+  # detached, so gradient reaches only the U-Net.
+  #
+  # Sums the event and averages the batch (see the MSELoss docstring),
+  # so this reads as ~D per sample at initialisation -- D=2352 on
+  # colormnist, since an untrained net predicts ~0 against a unit-normal
+  # target. Divide by D to compare against the usual per-pixel figure.
+  - _target_: "torch_concepts.nn.MSELoss"
+    variable: eps_hat
+    target_variable: eps_target
+
+  - _target_: "torch_concepts.nn.ConceptLoss"
+    binary_param: probs
+    categorical_param: probs
+    binary:
+      _target_: "torch.nn.BCELoss"
+    categorical:
+      _target_: "torch_concepts.nn.NLLProbLoss"

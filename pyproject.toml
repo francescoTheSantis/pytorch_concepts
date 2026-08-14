@@ -39,6 +39,7 @@ data = [
 tests = [
     "pytest-cov",
     "pytest",
+    "pyro-ppl",
 ]
 docs = [
     "matplotlib",

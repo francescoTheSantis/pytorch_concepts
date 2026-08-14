@@ -41,7 +41,7 @@ from .modules.low.predictors.mix import MixConceptEmbeddingToConcept, \
 
 # Dense layers
 from .modules.low.dense_layers import Dense, ResidualMLP, MLP, LinearEmbeddingEncoder, NonLinearEmbeddingEncoder, SelectorEmbeddingEncoder
-from .modules.low.conv import ConvDecoder
+from .modules.low.conv import ConvDecoder, ConditionalUNet
 from .modules.low.sequential import Sequential
 
 # Graph learner
@@ -67,6 +67,7 @@ from .modules.high.models.cbm import ConceptBottleneckModel
 from .modules.high.models.cem import ConceptEmbeddingModel
 from .modules.high.models.cbgm import ConceptBottleneckGenerativeModel
 from .modules.high.models.cvae import ConditionalVariationalAutoencoder
+from .modules.high.models.cfg_diffusion import ClassifierFreeGuidedDiffusion
 from .modules.high.models.graph_cbm import GraphConceptBottleneckModel
 from .modules.high.models.c2bm import CausallyReliableConceptBottleneckModel
 
@@ -90,6 +91,9 @@ from .modules.mid.inference.torch.forward import ForwardInference
 from .modules.mid.inference.torch.deterministic import DeterministicInference
 from .modules.mid.inference.torch.independent import IndependentInference
 from .modules.mid.inference.torch.ancestral import AncestralSamplingInference
+from .modules.mid.inference.torch.diffusion.schedule import DiffusionSchedule
+from .modules.mid.inference.torch.diffusion.training import CFGTrainingEngine
+from .modules.mid.inference.torch.diffusion.sampling import CFGSamplingEngine
 from .modules.mid.inference.torch.map_forward import MAPForwardInference
 from .modules.mid.inference.torch.rejection import RejectionSampling
 from .modules.mid.inference.torch.importance_sampling.importance_sampling import ImportanceSampling
@@ -163,6 +167,7 @@ __all__ = [
     "NonLinearEmbeddingEncoder",
     "SelectorEmbeddingEncoder",
     "ConvDecoder",
+    "ConditionalUNet",
 
     # COSMO
     "WANDAGraphLearner",
@@ -196,6 +201,7 @@ __all__ = [
     "ConceptEmbeddingModel",
     "ConceptBottleneckGenerativeModel",
     "ConditionalVariationalAutoencoder",
+    "ClassifierFreeGuidedDiffusion",
     "GraphConceptBottleneckModel",
     "CausallyReliableConceptBottleneckModel",
     # Models (mid-level)
@@ -216,6 +222,9 @@ __all__ = [
     "ForwardInference",
     "DeterministicInference",
     "AncestralSamplingInference",
+    "DiffusionSchedule",
+    "CFGTrainingEngine",
+    "CFGSamplingEngine",
     "MAPForwardInference",
     "RejectionSampling",
     "IndependentInference",

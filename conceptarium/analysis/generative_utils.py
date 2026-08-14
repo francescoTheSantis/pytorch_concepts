@@ -388,14 +388,32 @@ class EvalContext:
         return concept_variables(self.model)
 
     @property
+    def latent(self) -> str:
+        """Name of the variable a generation is seeded from.
+
+        ``z`` for the autoencoders; a diffusion model seeds its reverse process
+        from noise under a different name. Everything that *replays* a generation
+        — the steerability metric and its figure — has to address it by whatever
+        it is called, since replaying the seed is what holds the sample fixed
+        while one concept moves.
+        """
+        return getattr(self.model, "latent_variable_name", "z")
+
+    @property
     def query(self) -> List[str]:
-        """A decoding query: the observation, ``z`` and the concepts.
+        """A decoding query: the observation, the latent and the concepts.
 
         The embedding and bottleneck variables are left out — their events have
         differing widths and cannot share one annotated tensor. They are ancestors
         of ``input``, so they are still computed, just not reported.
+
+        The latent is ``z`` for the autoencoders; a model whose generations are
+        seeded from something else names it via ``latent_variable_name`` (a
+        diffusion model's is the noise the reverse process starts from). It has
+        to be reported whatever it is called, because the interventions replay it
+        so that only the target concept moves.
         """
-        return ["input", "z", *(v.name for v in self.concepts)]
+        return ["input", self.latent, *(v.name for v in self.concepts)]
 
     def real_samples(self, n: int) -> torch.Tensor:
         """``n`` flattened test images."""
@@ -617,7 +635,7 @@ class Steerability(Metric):
             if candidates.numel() == 0:
                 results[f"steerability_{name}"] = float("nan")
                 continue
-            evidence = {"z": drawn["z"][candidates]}
+            evidence = {ctx.latent: drawn[ctx.latent][candidates]}
             for other in ctx.concepts:
                 if other.name != name:
                     evidence[other.name] = drawn[other.name][candidates]
@@ -650,6 +668,20 @@ class ReconstructionError(Metric):
     name = "reconstruction_error"
 
     def compute(self, ctx: EvalContext) -> Dict[str, float]:
+        # Not every generative model can reconstruct a *given* image. An
+        # autoencoder has a guide that encodes one; a diffusion model has no
+        # encoder at all — recovering the noise behind a particular image means
+        # inverting the reverse process, which is a different procedure and not
+        # the objective this reports. Blank rather than a number that is not
+        # comparable to the autoencoders' (write_results takes the union of
+        # columns, so the cell is simply empty).
+        if not getattr(ctx.model, "reconstructs", True):
+            logger.info(
+                "%s does not reconstruct; skipping reconstruction_error",
+                type(ctx.model).__name__,
+            )
+            return {}
+
         loader = ctx.datamodule.test_dataloader() or ctx.datamodule.val_dataloader()
         reconstruction = MSELoss(variable="input")
         max_batches = ctx.cfg.get("max_eval_batches")
@@ -926,9 +958,17 @@ def figure_overview(ctx: EvalContext, out_dir: Path, n: int) -> None:
     are independent draws from ``p(z)``. The rows sit together because a
     generative model is judged on both at once: sharp reconstructions beside
     incoherent samples means the posterior has drifted off the prior.
+
+    A model that cannot reconstruct (no encoder — see
+    :class:`ReconstructionError`) gets the two rows it does have, originals and
+    generations, rather than no figure at all.
     """
     images, concepts = ctx.real_batch(n)
     generated, _ = ctx.generate(n)
+    if not getattr(ctx.model, "reconstructs", True):
+        save_grid([images, generated], ctx.modality.shape, out_dir / "overview.png",
+                  row_labels=["original", "generation"])
+        return
     with torch.no_grad():
         # The guide is the only route from an image to a posterior z, so encoding
         # needs the variational engine (the model's own eval one), which requires
@@ -954,7 +994,7 @@ def figure_steering(ctx: EvalContext, variable, out_dir: Path) -> None:
     generated, drawn = ctx.generate(max(1, int(ctx.cfg.get("n_samples", 10))))
     states = concept_states(variable, device=ctx.device)
     n = len(states)
-    evidence = {"z": drawn["z"][:1].expand(n, -1)}
+    evidence = {ctx.latent: drawn[ctx.latent][:1].expand(n, -1)}
     for other in ctx.concepts:
         if other.name != variable.name:
             evidence[other.name] = drawn[other.name][:1].expand(n, -1)

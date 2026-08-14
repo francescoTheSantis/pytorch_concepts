@@ -213,19 +213,33 @@ class MSELoss(TypeAwareLoss):
     :meth:`~torch_concepts.nn.modules.high.base.learner.BaseLearner.shared_step`
     populates with the evidence it passed to the model.
 
+    **Scoring against another variable.** With ``target_variable`` the target is
+    read from ``output.params`` instead of the evidence — the two *nodes* are
+    compared. This is what a model whose regression target is itself computed
+    inside the graph needs: a diffusion model's target is a closed-form function
+    of noise and timestep, both drawn during the forward pass, so it is never
+    available as evidence. The target is detached, so gradient flows only into
+    the prediction.
+
     Args:
-        variable (str): Name of the observed variable to score. Default
-            ``'input'``.
+        variable (str): Name of the variable to score. Default ``'input'``.
         param (str, optional): Which reported quantity is the prediction. By
             default the sole reported one (a ``Delta``'s ``value``), or the
             family's ``primary_param`` when several are reported (a ``Normal``'s
-            ``loc``, a ``Bernoulli``'s ``probs``).
+            ``loc``, a ``Bernoulli``'s ``probs``). Applies to ``target_variable``
+            too, when set.
+        target_variable (str, optional): Name of another *queried* variable to
+            score against, instead of an observed value from the evidence. Both
+            variables must be in the query, or their parameters are not reported
+            at all.
         reduction (str): ``'mean'`` (default) averages the per-sample summed
             squared error over the batch; ``'sum'`` sums it.
 
     Example:
         >>> from torch_concepts.nn import MSELoss
         >>> loss_fn = MSELoss(variable='input')
+        >>> # a diffusion model's denoising term: two nodes, no evidence
+        >>> loss_fn = MSELoss(variable='eps_hat', target_variable='eps_target')
 
     See Also:
         torch.nn.MSELoss : the elementwise-mean tensor loss this is *not*.
@@ -236,48 +250,71 @@ class MSELoss(TypeAwareLoss):
         variable: str = "input",
         param: Optional[str] = None,
         reduction: str = "mean",
+        target_variable: Optional[str] = None,
     ):
         super().__init__()
         self.variable = variable
         self.param = param
+        self.target_variable = target_variable
         self.reduction = reduction
 
     def extra_repr(self) -> str:
-        return f"variable={self.variable!r}"
+        if self.target_variable is None:
+            return f"variable={self.variable!r}"
+        return f"variable={self.variable!r}, target_variable={self.target_variable!r}"
 
-    def _prediction(self, params: Dict[str, torch.Tensor]) -> torch.Tensor:
-        """The reported quantity to score, resolved once per call."""
+    def _prediction(
+        self, params: Dict[str, torch.Tensor], name: Optional[str] = None
+    ) -> torch.Tensor:
+        """The reported quantity to score, resolved once per call.
+
+        ``name`` is the variable the parameters belong to — :attr:`variable` by
+        default, :attr:`target_variable` when resolving the other side.
+        """
+        name = self.variable if name is None else name
         if self.param is not None:
             if self.param not in params:
                 raise ValueError(
-                    f"MSELoss({self.variable!r}): {self.variable!r} reports "
+                    f"MSELoss({self.variable!r}): {name!r} reports "
                     f"{sorted(params)}, not {self.param!r}."
                 )
             return params[self.param]
         if len(params) == 1:
             return next(iter(params.values()))
         # Several quantities reported: score the one carrying the point estimate.
-        family = _family_from_params(params, f"MSELoss({self.variable!r})")
-        primary = spec_for(family, f"MSELoss({self.variable!r})").primary_param
+        family = _family_from_params(params, f"MSELoss({name!r})")
+        primary = spec_for(family, f"MSELoss({name!r})").primary_param
         if primary not in params:
             raise ValueError(
-                f"MSELoss({self.variable!r}): {family.__name__}'s point estimate is "
+                f"MSELoss({name!r}): {family.__name__}'s point estimate is "
                 f"{primary!r}, which is not among the reported {sorted(params)}. "
                 "Pass `param=` explicitly."
             )
         return params[primary]
 
-    def forward(self, output: ModelOutput, target=None) -> torch.Tensor:
-        extra = output.extra or {}
-        evidence = extra.get("evidence") or {}
+    def _target(self, output: ModelOutput) -> torch.Tensor:
+        """The value to score against: another queried node, or the evidence."""
+        if self.target_variable is not None:
+            # A *target* takes no gradient: detached, so the objective can only
+            # be reduced by moving the prediction.
+            return self._prediction(
+                _variable_params(output.params, self.target_variable),
+                self.target_variable,
+            ).detach()
+
+        evidence = (output.extra or {}).get("evidence") or {}
         observed = evidence.get(self.variable)
         if observed is None:
             raise ValueError(
                 f"MSELoss: no observed value for {self.variable!r}. "
                 "It must be supplied as evidence — the learner forwards its "
-                "evidence dict to the loss under `output.extra['evidence']`."
+                "evidence dict to the loss under `output.extra['evidence']` — or "
+                "pass `target_variable=` to score against another queried node."
             )
+        return observed
 
+    def forward(self, output: ModelOutput, target=None) -> torch.Tensor:
+        observed = self._target(output)
         predicted = self._prediction(_variable_params(output.params, self.variable))
         # Predictions are flat ``(*leading, size)``; the observed value may still
         # carry its event shape (an image stays ``(B, C, H, W)``).

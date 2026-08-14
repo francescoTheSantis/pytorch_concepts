@@ -75,7 +75,7 @@ from analysis.generative_utils import (  # noqa: E402
     run_identity,
     write_results,
 )
-from torch_concepts.nn import AncestralSamplingInference  # noqa: E402
+from torch_concepts.nn import AncestralSamplingInference, CFGSamplingEngine  # noqa: E402
 
 logger = logging.getLogger(__name__)
 
@@ -110,11 +110,24 @@ def build_context(cfg: DictConfig, job_dir: Path, device: torch.device) -> Tuple
     # during training, so decoding at the default 1.0 would sample far softer
     # codes than the trained decoder ever saw. The checkpoint restores the
     # training engine's temperature buffer, so this reads what training ended on.
+    #
+    # A model whose generative process is NOT one forward pass brings its own
+    # sampler: a diffusion model generates by running a reverse process, which no
+    # single ancestral pass produces. It implements the same `query` contract, so
+    # everything downstream is unchanged.
     temperature = float(model.train_inference.temperature)
-    engine = AncestralSamplingInference(
-        model.pgm, p_int=1.0, initial_temperature=temperature, annealing="constant"
-    )
-    logger.info("decoding %s at temperature %.4f", job_dir.name, temperature)
+    sampler = getattr(model, "sampler", None)
+    if isinstance(sampler, CFGSamplingEngine):
+        engine = sampler
+        logger.info(
+            "decoding %s with %s (%d steps, s=%.1f, eta=%.1f)", job_dir.name,
+            engine.name, engine.n_steps, engine.guidance_scale, engine.eta,
+        )
+    else:
+        engine = AncestralSamplingInference(
+            model.pgm, p_int=1.0, initial_temperature=temperature, annealing="constant"
+        )
+        logger.info("decoding %s at temperature %.4f", job_dir.name, temperature)
 
     ctx = EvalContext(
         model=model, engine=engine, datamodule=datamodule,
