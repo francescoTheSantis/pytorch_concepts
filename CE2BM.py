@@ -339,6 +339,7 @@ def run_experiment(tag, concept_subset=None):
     ######### Layers
     backbone = MLP(input_size=x_train.shape[1], hidden_size=latent_dims,
                    n_layers=1, activation='leaky_relu')
+
     
     # `embs` is a list of 7 independent Variables (one per concept), so
     # ParametricCPD deep-copies this module once per concept below -- each
