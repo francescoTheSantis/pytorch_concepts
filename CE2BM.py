@@ -234,76 +234,43 @@ def intervention_curves(engine, x, c_gt, y_gt, concept_names, task_name, aux_nam
     return curves
 
 
-def mean_std(curves, concept_names):
-    """Mean and spread *across concepts* at each ``p_int``."""
-    acc = np.array([curves[name] for name in concept_names])
-    return acc.mean(0), acc.std(0)
+def plot_nodes(curves, p_grid, baselines, concept_names, task_name, title, path):
+    """One panel per node, all on a single row.
 
-
-def plot_nodes(curves, p_grid, baselines, concept_names, task_name, aux_names,
-               title, path):
-    """One panel per node, in three rows.
-
-    Row 0: the concepts as predicted today, then the task. Row 1: each concept
-    re-predicted from its mixed embedding, column-aligned underneath the concept
-    it mirrors (the cell below the task has no counterpart and is hidden).
-    Row 2: the same auxiliary heads plus the task, but read off the embeddings
-    the EBM repainted -- so row 2 vs row 1 is like-for-like, same heads and
-    different embeddings.
+    Every way of predicting that node shares its panel, so the comparison is
+    read within a subplot rather than across rows: the node as the CEM predicts
+    it, the auxiliary head reading the CEM's own mix embedding, the same head
+    reading the EBM-repainted embedding, and the majority-class baseline.
     """
-    top = [*concept_names, task_name]
-    fig, axes = plt.subplots(3, len(top), figsize=(2 * len(top), 8),
+    nodes = [*concept_names, task_name]
+    fig, axes = plt.subplots(1, len(nodes), figsize=(2.4 * len(nodes), 3.6),
                              sharey=True, squeeze=False)
-    for col, name in enumerate(top):
-        ax = axes[0][col]
-        ax.plot(p_grid, curves[name], marker='o')
-        ax.axhline(baselines[name], color='gray', linestyle='--', linewidth=1)
-        ax.set(title=name + (' (task)' if name == task_name else ''),
-               xlabel='$p_{int}$', ylim=(0, 1.02))
-    for col, aux_name in enumerate(aux_names):
-        ax = axes[1][col]
-        ax.plot(p_grid, curves[aux_name], marker='s', color='tab:orange')
-        ax.axhline(baselines[aux_name], color='gray', linestyle='--', linewidth=1)
-        ax.set(title=aux_name, xlabel='$p_{int}$', ylim=(0, 1.02))
-    axes[1][len(top) - 1].axis('off')  # no auxiliary counterpart for the task
-    for col, name in enumerate(top):
-        ax = axes[2][col]
-        key = f"ebm_{name}"
-        ax.plot(p_grid, curves[key], marker='D', color='tab:red')
-        ax.axhline(baselines[key], color='gray', linestyle='--', linewidth=1)
-        ax.set(title=key, xlabel='$p_{int}$', ylim=(0, 1.02))
+    for col, name in enumerate(nodes):
+        ax, is_task = axes[0][col], name == task_name
+        ax.plot(p_grid, curves[name], marker='o', color='tab:blue',
+                label='task predictor' if is_task else 'intervened concept')
+        if not is_task:   # the task has no auxiliary counterpart
+            ax.plot(p_grid, curves[f"aux_{name}"], marker='s', color='tab:orange',
+                    label='auxiliary (CEM mix)')
+        ax.plot(p_grid, curves[f"ebm_{name}"], marker='D', color='tab:red',
+                label='auxiliary (EBM repaint)')
+        ax.axhline(baselines[name], color='gray', linestyle='--', linewidth=1,
+                   label='majority baseline')
+        ax.set(title=name + (' (task)' if is_task else ''), xlabel='$p_{int}$',
+               ylim=(0, 1.02))
     axes[0][0].set_ylabel('accuracy')
-    axes[1][0].set_ylabel('accuracy (auxiliary)')
-    axes[2][0].set_ylabel('accuracy (EBM repaint)')
-    fig.suptitle(f'{title}   (dashed: majority baseline)')
-    fig.tight_layout()
-    fig.savefig(path, dpi=150)
-    plt.close(fig)
-
-
-def plot_average(curves, p_grid, concept_names, task_name, aux_names, title, path):
-    """The concept and auxiliary panels collapsed into mean +/- std bands."""
-    mean, std = mean_std(curves, concept_names)
-    aux_mean, aux_std = mean_std(curves, aux_names)
-    ebm_mean, ebm_std = mean_std(curves, [f"ebm_{n}" for n in concept_names])
-    fig, ax = plt.subplots(figsize=(6, 4.2))
-    ax.fill_between(p_grid, mean - std, mean + std, alpha=0.2)
-    ax.fill_between(p_grid, aux_mean - aux_std, aux_mean + aux_std, alpha=0.2,
-                    color='tab:orange')
-    ax.fill_between(p_grid, ebm_mean - ebm_std, ebm_mean + ebm_std, alpha=0.2,
-                    color='tab:red')
-    ax.plot(p_grid, mean, marker='o', label=f'concepts (mean +/- std over {len(concept_names)})')
-    ax.plot(p_grid, aux_mean, marker='s', color='tab:orange',
-            label='auxiliary concepts (mean +/- std)')
-    ax.plot(p_grid, ebm_mean, marker='D', color='tab:red',
-            label='auxiliary after EBM repaint (mean +/- std)')
-    ax.plot(p_grid, curves[task_name], marker='^', color='tab:green',
-            label=f'{task_name} (task)')
-    ax.plot(p_grid, curves[f"ebm_{task_name}"], marker='v', color='tab:green',
-            linestyle='--', label=f'{task_name} (task, after repaint)')
-    ax.set(xlabel='$p_{int}$', ylabel='accuracy', ylim=(0, 1.02), title=title)
-    ax.legend(loc='lower right', fontsize=7)
-    fig.tight_layout()
+    # Collect labels across panels: the task panel carries the only 'task
+    # predictor' handle, the concept panels the only 'auxiliary (CEM mix)' one.
+    handles, labels = [], []
+    for ax in (axes[0][0], axes[0][-1]):
+        for h, l in zip(*ax.get_legend_handles_labels()):
+            if l not in labels:
+                handles.append(h)
+                labels.append(l)
+    fig.legend(handles, labels, loc='lower center', ncol=len(labels),
+               frameon=False, fontsize=9)
+    fig.suptitle(title)
+    fig.tight_layout(rect=(0, 0.11, 1, 0.94))
     fig.savefig(path, dpi=150)
     plt.close(fig)
 
@@ -487,7 +454,7 @@ def run_experiment(tag, concept_subset=None):
     eval_engine = AncestralSamplingInference(concept_model, p_int=0)
     p_grid = np.linspace(0.0, 1.0, 11)
     fig_dir = Path(__file__).parent / "figures" / tag
-    (fig_dir / "average").mkdir(parents=True, exist_ok=True)
+    fig_dir.mkdir(parents=True, exist_ok=True)
 
     concept_model.eval()
     generator = torch.Generator().manual_seed(0)   # CPU, so draws are device-independent
@@ -542,24 +509,21 @@ def run_experiment(tag, concept_subset=None):
         stem = f"cem_asia_interventions_noise_{noise_level}.png"
         title = (rf'{tag} -- concept interventions, input noise $\lambda$'
                  rf' = {noise_level}')
-        plot_nodes(curves, p_grid, baselines, concept_names, task_name, aux_names,
+        plot_nodes(curves, p_grid, baselines, concept_names, task_name,
                    title, fig_dir / stem)
-        plot_average(curves, p_grid, concept_names, task_name, aux_names, title,
-                     fig_dir / "average" / stem)
+        # Everything the plots need, so a layout change never costs a re-run.
+        torch.save({'curves': curves, 'p_grid': p_grid, 'baselines': baselines,
+                    'concept_names': concept_names, 'task_name': task_name,
+                    'aux_names': aux_names, 'title': title},
+                   fig_dir / stem.replace('.png', '.pt'))
 
+        # Per node only. Averaging accuracy across concepts would pool variables
+        # with baselines from 0.51 (smoke) to 0.99 (asia), so the mean says more
+        # about which concepts are in the set than about the method.
         print(f"\nlambda = {noise_level}  ->  {stem}   (p_int = 0 / 0.5 / 1)")
         for name, acc in curves.items():
             print(f"  {name:12s} {acc[0]:.3f} / {acc[5]:.3f} / {acc[-1]:.3f}"
                   f"   baseline {baselines[name]:.3f}")
-        mean, std = mean_std(curves, concept_names)
-        print(f"  concepts {mean[0]:.3f} / {mean[5]:.3f} / {mean[-1]:.3f}"
-              f"   std {std[0]:.3f} / {std[5]:.3f} / {std[-1]:.3f}")
-        aux_mean, aux_std = mean_std(curves, aux_names)
-        print(f"  auxiliary {aux_mean[0]:.3f} / {aux_mean[5]:.3f} / {aux_mean[-1]:.3f}"
-              f"   std {aux_std[0]:.3f} / {aux_std[5]:.3f} / {aux_std[-1]:.3f}")
-        ebm_mean, ebm_std = mean_std(curves, [f"ebm_{n}" for n in concept_names])
-        print(f"  repainted {ebm_mean[0]:.3f} / {ebm_mean[5]:.3f} / {ebm_mean[-1]:.3f}"
-              f"   std {ebm_std[0]:.3f} / {ebm_std[5]:.3f} / {ebm_std[-1]:.3f}")
 
 
 def main():
