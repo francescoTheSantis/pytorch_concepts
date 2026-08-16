@@ -89,6 +89,8 @@ from .modules.mid.inference.torch.importance_sampling.importance_sampling import
 from .modules.mid.inference.torch.importance_sampling.base_proposal import BaseProposal
 from .modules.mid.inference.torch.importance_sampling.mutilated_network import MutilatedNetworkProposal
 from .modules.mid.inference.torch.belief_propagation import BeliefPropagation
+from .modules.mid.inference.torch.langevin import LangevinDynamics
+from .modules.mid.inference.torch.annealed_langevin import AnnealedLangevinDynamics
 # pyro
 from .modules.mid.inference.pyro.variational import VariationalInference
 from .modules.mid.inference.pyro.importance import PyroImportanceSampling
@@ -168,7 +170,6 @@ __all__ = [
     "DepthWeightedConceptLoss",
     "L1LogitRegularizer",
     "NLLProbLoss",
-
     # Metrics
     "ConceptMetrics",
     "compute_cace",
@@ -209,6 +210,8 @@ __all__ = [
     "BaseProposal",
     "MutilatedNetworkProposal",
     "BeliefPropagation",
+    "LangevinDynamics",
+    "AnnealedLangevinDynamics",
     "PyroBaseInference",
     "VariationalInference",
     "PyroImportanceSampling",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from typing import Dict, List, Mapping, Optional, Union
 
 import torch
@@ -9,6 +10,39 @@ import torch.nn as nn
 
 from .factor import ParametricFactor
 from ..variable import Variable
+
+
+class GaussianFourierEmbedding(nn.Module):
+    """``sigma -> [sin(2*pi*W*log sigma), cos(2*pi*W*log sigma)]``.
+
+    Turns the noise level of a conditional energy into something a network can
+    actually use. Fed in raw, ``sigma`` is one scalar among the scope's features and
+    is easy to ignore; worse, two adjacent rungs of a geometric ladder differ by a
+    few percent, while the scores they demand differ completely. Projecting onto
+    random high frequencies makes nearby levels far apart in the embedding, which is
+    what lets one set of weights cover the whole ladder.
+
+    ``W`` is a fixed buffer, not a parameter — learning it is the standard failure
+    mode, since gradient descent shrinks the frequencies back down and undoes the
+    separation. This is the score-SDE / NCSN++ default.
+
+    Args:
+        size (int): Output width. Rounded down to even (half sine, half cosine).
+        scale (float): Standard deviation of ``W``; larger means higher frequencies.
+    """
+
+    def __init__(self, size: int = 32, scale: float = 16.0):
+        super().__init__()
+        self.size = int(size) // 2 * 2
+        self.register_buffer("frequencies", torch.randn(self.size // 2) * scale)
+
+    def extra_repr(self) -> str:
+        return f"size={self.size}"
+
+    def forward(self, sigma: torch.Tensor) -> torch.Tensor:
+        """``(...,)`` or a scalar -> ``(..., size)``."""
+        projected = 2 * math.pi * sigma.reshape(-1, 1).log() * self.frequencies
+        return torch.cat([projected.sin(), projected.cos()], dim=-1)
 
 
 class ParametricPotential(ParametricFactor):
@@ -31,6 +65,19 @@ class ParametricPotential(ParametricFactor):
     aggregate : callable or dict, optional
         As in :class:`ParametricFactor`; aggregates the inputs before the energy
         module (default: concatenate along the last dim).
+    noise_conditioned : bool, default False
+        Make this a conditional energy ``E(scope, sigma)``. :meth:`energy` then
+        requires a ``sigma=`` keyword, embeds it with
+        :class:`GaussianFourierEmbedding`, and concatenates the embedding onto the
+        aggregated scope values — so the energy module stays an ordinary
+        ``nn.Sequential`` and never sees ``sigma`` as a separate argument. Its input
+        width grows by ``noise_embedding_size``.
+
+        This is what a score-matching objective needs: the score at a coarse noise
+        level and at a fine one are different functions, and one unconditioned
+        network would have to average them.
+    noise_embedding_size : int, default 32
+        Width of that embedding. Ignored when ``noise_conditioned`` is False.
 
     Raises
     ------
@@ -48,6 +95,8 @@ class ParametricPotential(ParametricFactor):
         parametrization: Union[nn.Module, Dict[str, nn.Module]],
         name: Optional[str] = None,
         aggregate=None,
+        noise_conditioned: bool = False,
+        noise_embedding_size: int = 32,
     ) -> None:
         if not isinstance(scope, (list, tuple)) or not scope:
             raise ValueError("ParametricPotential: `scope` must be a non-empty list of Variables.")
@@ -64,11 +113,19 @@ class ParametricPotential(ParametricFactor):
         self._name: str = name if name is not None else self._default_name()
 
         parametrization = self._instantiate_lazy(
-            self._normalize_parametrization(parametrization), self._scope
+            self._normalize_parametrization(parametrization),
+            self._scope,
+            noise_embedding_size if noise_conditioned else 0,
         )
         super().__init__(
             parametrization=parametrization,
             aggregate=aggregate,
+        )
+        # After ``super().__init__``: this is an nn.Module and cannot register a
+        # submodule before it is initialised.
+        self.noise_embedding = (
+            GaussianFourierEmbedding(noise_embedding_size)
+            if noise_conditioned else None
         )
 
     def _default_name(self) -> str:
@@ -78,6 +135,7 @@ class ParametricPotential(ParametricFactor):
     def _instantiate_lazy(
         parametrization: Dict[str, nn.Module],
         scope: List[Variable],
+        noise_embedding_size: int = 0,
     ) -> Dict[str, nn.Module]:
         """Build any unbuilt :class:`LazyConstructor` entries into concrete modules.
 
@@ -92,6 +150,10 @@ class ParametricPotential(ParametricFactor):
         * ``out_concepts``  — always ``1``: unlike a CPD's per-parameter output,
           the energy module produces a single scalar per leading element, not a
           value sized to any particular variable.
+
+        ``noise_embedding_size`` (0 when unconditioned) is added to
+        ``in_embeddings``, because a conditional energy sees the noise embedding
+        concatenated onto the scope values.
         """
         from ...low.lazy import LazyConstructor
 
@@ -104,6 +166,7 @@ class ParametricPotential(ParametricFactor):
 
         in_concepts = sum(v.size for v in scope if v.variable_type == "concept")
         in_embeddings = sum(v.size for v in scope if v.variable_type == "embedding")
+        in_embeddings += noise_embedding_size
 
         resolved: Dict[str, nn.Module] = {}
         for pname, module in parametrization.items():
@@ -155,11 +218,26 @@ class ParametricPotential(ParametricFactor):
         axis is the feature axis, so the energy is reduced to one scalar per
         leading element whether the module emits ``(*leading,)`` or
         ``(*leading, 1)``.
+
+        When ``noise_conditioned=True`` a ``sigma=`` keyword is required and is
+        **consumed here**: it is embedded and concatenated onto the aggregated
+        values, so the energy module receives one ordinary input tensor and never a
+        ``sigma`` argument. Otherwise ``layer_kwargs`` pass through untouched, which
+        is how a module that wants to handle ``sigma`` itself still can.
         """
         inputs: Dict[Variable, torch.Tensor] = {v: scope_values[v] for v in self._scope}
 
         mod = self.parametrization["energy"]
         cat = self._aggregators["energy"](inputs)
+        if self.noise_embedding is not None:
+            sigma = layer_kwargs.pop("sigma", None)
+            if sigma is None:
+                raise ValueError(
+                    f"{type(self).__name__} {self._name!r} is noise-conditioned and "
+                    "needs a `sigma=` keyword; call energy(..., sigma=s) or "
+                    "MarkovNetwork.compute_score(..., sigma=s)."
+                )
+            cat = self._append_noise(cat, sigma)
         if isinstance(cat, dict):
             leading = next(iter(cat.values())).shape[:-1]
             out = mod(**cat, **layer_kwargs)
@@ -167,6 +245,24 @@ class ParametricPotential(ParametricFactor):
             leading = cat.shape[:-1]
             out = mod(cat, **layer_kwargs)
         return out.reshape(*leading)
+
+    def _append_noise(self, cat, sigma: torch.Tensor):
+        """Concatenate the embedded noise level onto the aggregated scope values.
+
+        ``sigma`` may be a scalar (one level for the whole batch) or one value per
+        leading element; both broadcast to the aggregate's leading shape, so a
+        training step that draws a different level per example costs nothing extra.
+        """
+        if isinstance(cat, dict):
+            raise TypeError(
+                f"{type(self).__name__} {self._name!r}: noise conditioning needs an "
+                "aggregator that concatenates into one tensor, but this one emitted "
+                "a dict. Fold the noise level in inside the energy module instead."
+            )
+        if not torch.is_tensor(sigma):
+            sigma = torch.as_tensor(sigma, dtype=cat.dtype, device=cat.device)
+        embedded = self.noise_embedding(sigma.to(dtype=cat.dtype, device=cat.device))
+        return torch.cat([cat, embedded.expand(*cat.shape[:-1], embedded.shape[-1])], dim=-1)
 
     def log_potential(
         self,
