@@ -91,8 +91,11 @@ def train_mrf(
     device = next(mrf.parameters()).device
     _, states = state_grid(cards, device)
 
+    # Histogrammed on the CPU: `bincount` is not implemented on every accelerator
+    # backend, and this is a one-off over integer codes.
     sizes = list(cards.values())
-    index = torch.zeros(len(codes), dtype=torch.long, device=codes.device)
+    codes = codes.cpu()
+    index = torch.zeros(len(codes), dtype=torch.long)
     for axis, k in enumerate(sizes):                      # row-major flattening
         index = index * k + codes[:, axis]
     empirical = torch.bincount(index, minlength=int(torch.tensor(sizes).prod()))

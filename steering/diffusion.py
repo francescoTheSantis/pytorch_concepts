@@ -133,7 +133,9 @@ class DDPM(nn.Module):
         Returns:
             ``(B, dim)`` un-normalised.
         """
-        reference = self.normalize(reference)
+        device = self.mean.device
+        reference = self.normalize(reference.to(device))
+        fixed_mask = fixed_mask.to(device)
 
         # The literal procedure runs from t = steps with *both* blocks pinned and
         # releases the free one at `release_step`. But while both are pinned every
@@ -199,9 +201,12 @@ def _toy_main():
     import matplotlib.pyplot as plt
 
     from torch_concepts import seed_everything
+    from steering import resolve_device
 
     seed_everything(0)
-    n, shift, release = 4000, 1.2, 400
+    device = resolve_device()
+    print(f"device: {device}")
+    n, shift, release = 2000, 1.2, 160
 
     x0 = torch.rand(n, 1) * 4 - 2
     data = torch.cat([x0, (3 * x0).sin() + 0.15 * torch.randn(n, 1)], dim=-1)

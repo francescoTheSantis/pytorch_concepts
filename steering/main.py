@@ -17,6 +17,7 @@ import torch
 import torch.nn.functional as F
 
 from torch_concepts import seed_everything
+from steering import resolve_device
 from steering.concept_vae import ConceptVAE, round_trip_accuracy, train_concept_vae
 from steering.data import CARDS, COLOR_NAMES, concept_codes, load_colormnist, one_hot
 from steering.diffusion import DDPM, train_ddpm
@@ -49,9 +50,27 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument('--beta', type=float, default=0.5,
                         help='concept-VAE KL weight; see steering.concept_vae')
     parser.add_argument('--seed', type=int, default=0)
-    parser.add_argument('--device', default='cpu')
+    parser.add_argument('--device', default='auto',
+                        help="'auto' picks CUDA, then MPS, then CPU")
     parser.add_argument('--fresh', action='store_true', help='ignore the cache')
     return parser.parse_args(argv)
+
+
+@torch.no_grad()
+def encode_all(fn, data, device, batch_size: int = 512) -> torch.Tensor:
+    """Apply an encoder over the whole dataset in batches, on ``device``.
+
+    Batched rather than one big call: the dataset is 10k images and a single
+    forward pass over all of them is an easy way to exhaust a small GPU.
+    """
+    n = len(data) if torch.is_tensor(data) else len(next(iter(data.values())))
+    chunks = []
+    for start in range(0, n, batch_size):
+        stop = start + batch_size
+        batch = (data[start:stop].to(device) if torch.is_tensor(data)
+                 else {k: v[start:stop].to(device) for k, v in data.items()})
+        chunks.append(fn(batch))
+    return torch.cat(chunks)
 
 
 def build(args, device) -> Tuple:
@@ -87,9 +106,8 @@ def build(args, device) -> Tuple:
                                     epochs=args.epochs_cvae, beta=args.beta,
                                     device=device)
         print("\n[4/4] fitting the DDPM over [z ; e]")
-        with torch.no_grad():
-            z = pretrained.encode(images.to(device))
-            e = cvae.encode({k: v.to(device) for k, v in concepts.items()})
+        z = encode_all(pretrained.encode, images, device)
+        e = encode_all(cvae.encode, concepts, device)
         ddpm = train_ddpm(ddpm, torch.cat([z, e], dim=-1), epochs=args.epochs_ddpm,
                           device=device)
         ARTIFACTS.mkdir(parents=True, exist_ok=True)
@@ -100,8 +118,7 @@ def build(args, device) -> Tuple:
 
     for module in (pretrained, cvae, mrf, ddpm):
         module.eval()
-    with torch.no_grad():
-        z = pretrained.encode(images.to(device))
+    z = encode_all(pretrained.encode, images, device)
     return images, digits, color, concepts, z, pretrained, cvae, mrf, ddpm, empirical
 
 
@@ -153,7 +170,8 @@ def report_steering(images, z_tilde, c_tilde, pretrained, device):
 
 def main(argv=None):
     args = parse_args(argv)
-    device = torch.device(args.device)
+    device = resolve_device(args.device)
+    print(f"device: {device}")
     seed_everything(args.seed)
 
     (images, digits, color, concepts, z,
