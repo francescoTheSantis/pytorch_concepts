@@ -30,7 +30,16 @@ class DDPM(nn.Module):
         super().__init__()
         self.dim, self.steps, self.time_dim = dim, steps, time_dim
 
-        betas = torch.linspace(1e-4, 0.02, steps)
+        # Ho et al.'s linear 1e-4 -> 0.02 schedule is calibrated for T = 1000; its
+        # total noise budget is `sum(betas)`, and the forward process only reaches
+        # pure noise because that sum is ~10. Reused verbatim at a smaller T it
+        # silently stops destroying the signal -- measured alpha_bar_T: 0.017 at
+        # T=400, 0.13 at T=200, 0.36 at T=100, against 4e-5 at T=1000. Sampling
+        # then starts from a `randn` the model never saw at training time, and
+        # every SDEdit noise level is wrong with it. Rescaling by 1000/T holds the
+        # budget fixed, so T is purely a compute knob (alpha_bar_T ~ 3e-5 for all
+        # of the above).
+        betas = (torch.linspace(1e-4, 0.02, steps) * (1000.0 / steps)).clamp(max=0.999)
         alphas = 1.0 - betas
         self.register_buffer('betas', betas)
         self.register_buffer('alphas', alphas)
