@@ -39,10 +39,24 @@ def intervene(
     return edited[:, :latent], c_tilde
 
 
+def _value(concepts: Concepts, name: str, index: int):
+    value = concepts[name][index].argmax(-1).item()
+    return COLOR_NAMES[value] if name == 'color' else value
+
+
 def _label(concepts: Concepts, index: int) -> str:
-    digit = concepts['digit'][index].argmax(-1).item()
-    color = COLOR_NAMES[concepts['color'][index].argmax(-1).item()]
-    return f"{digit} {color}"
+    """``4, green`` -- the concept set of one column."""
+    return f"{_value(concepts, 'digit', index)}, {_value(concepts, 'color', index)}"
+
+
+def _intervention_label(c_tilde: Concepts, index: int) -> str:
+    """What was clamped, and what the MRF made of it.
+
+    ``color`` is the only intervened concept, so it appears on both lines by
+    construction; ``digit`` on the second line is the part BP re-sampled.
+    """
+    return (f"do color={_value(c_tilde, 'color', index)}\n"
+            f"→ {_label(c_tilde, index)}")
 
 
 @torch.no_grad()
@@ -79,7 +93,7 @@ def make_figure(
             if row == 0:
                 ax.set_title(_label(concepts, column), fontsize=7)
             if row == 2:
-                ax.set_xlabel(_label(c_tilde, column), fontsize=7)
+                ax.set_xlabel(_intervention_label(c_tilde, column), fontsize=6)
 
     path.parent.mkdir(parents=True, exist_ok=True)
     fig.tight_layout()
