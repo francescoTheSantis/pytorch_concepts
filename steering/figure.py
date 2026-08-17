@@ -23,6 +23,7 @@ def intervene(
     cvae,
     ddpm,
     release_step: int,
+    resample: int = 10,
 ) -> Tuple[torch.Tensor, Concepts]:
     """Flip the colour and steer ``z`` to match. Returns ``(z_tilde, c_tilde)``.
 
@@ -35,7 +36,8 @@ def intervene(
 
     latent = z.shape[-1]
     fixed_mask = torch.arange(latent + e_tilde.shape[-1]) >= latent
-    edited = ddpm.sdedit(torch.cat([z, e_tilde], dim=-1), fixed_mask, release_step)
+    edited = ddpm.sdedit(torch.cat([z, e_tilde], dim=-1), fixed_mask,
+                         release_step, resample)
     return edited[:, :latent], c_tilde
 
 
@@ -70,13 +72,15 @@ def make_figure(
     cvae,
     ddpm,
     release_step: int,
+    resample: int,
     path: Path,
 ) -> Tuple[torch.Tensor, Concepts]:
     """Write the 3-row figure. Every argument is already restricted to the
     columns being shown."""
     import matplotlib.pyplot as plt
 
-    z_tilde, c_tilde = intervene(z, color, propagate, cvae, ddpm, release_step)
+    z_tilde, c_tilde = intervene(z, color, propagate, cvae, ddpm,
+                                 release_step, resample)
     rows = [images, reconstruct(decoder, z), reconstruct(decoder, z_tilde)]
     names = ['original', 'reconstruction', f'intervened (release t={release_step})']
 

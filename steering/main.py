@@ -44,6 +44,9 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument('--release-step', type=int, default=160,
                         help='z is pinned above this step and free below it; '
                              '0 leaves z untouched, --diffusion-steps regenerates it')
+    parser.add_argument('--resample', type=int, default=10,
+                        help='RePaint harmonisation iterations per SDEdit step; '
+                             '1 is naive replacement and under-conditions')
     parser.add_argument('--epochs-pretrain', type=int, default=15)
     parser.add_argument('--epochs-cvae', type=int, default=60)
     parser.add_argument('--epochs-ddpm', type=int, default=600)
@@ -192,6 +195,7 @@ def main(argv=None):
         cvae=cvae,
         ddpm=ddpm,
         release_step=args.release_step,
+        resample=args.resample,
         path=path,
     )
     report_steering(images[columns], z_tilde, c_tilde, pretrained, device)
