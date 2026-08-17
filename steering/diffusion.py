@@ -199,11 +199,15 @@ def train_ddpm(
 def _toy_main():
     """2-D test on a curve, mirroring the real pipeline's geometry.
 
-    Dimension 0 plays the role of ``e`` (pinned to a value we choose) and
-    dimension 1 the role of ``z`` (released, so it must move onto the curve at
-    the new dimension-0 value). If SDEdit works, the third panel sits on the
-    curve, shifted along it -- not on the original points and not on the whole
-    unconditional cloud.
+    Dimension 0 plays the role of ``e``: pinned to the single constant ``PIN``
+    for every point, exactly as every column of the real figure receives the same
+    ``e~`` when it gets the same concept set. Dimension 1 plays the role of ``z``:
+    released, so it has to leave its original value and settle where the curve is
+    at ``PIN``.
+
+    The claim the third panel must show is therefore sharp and easy to read off:
+    **every point on the vertical line dim0 = PIN, with dim1 concentrated at
+    sin(3 * PIN)** -- not spread over the curve, and not left where it started.
     """
     from pathlib import Path
 
@@ -215,32 +219,36 @@ def _toy_main():
     seed_everything(0)
     device = resolve_device()
     print(f"device: {device}")
-    n, shift, release = 2000, 1.2, 160
+    n, pin, release, shown = 8000, 1.2, 200, 600
+    target = math.sin(3 * pin)
 
     x0 = torch.rand(n, 1) * 4 - 2
     data = torch.cat([x0, (3 * x0).sin() + 0.15 * torch.randn(n, 1)], dim=-1)
 
-    model = train_ddpm(DDPM(dim=2), data, epochs=300)
+    model = train_ddpm(DDPM(dim=2, steps=200, hidden=256), data, epochs=800,
+                       batch_size=512, device=device)
 
-    unconditional = model.sample(n)
+    unconditional = model.sample(n).cpu()
 
-    # Pin dimension 0 to a shifted value; dimension 1 has to follow the curve.
-    columns = torch.arange(600)
-    reference = data[columns].clone()
-    reference[:, 0] = (reference[:, 0] + shift).clamp(-2, 2)
-    edited = model.sdedit(reference, torch.tensor([True, False]), release)
+    # One constant for the pinned dimension, the original points for the free one.
+    reference = data[:shown].clone()
+    reference[:, 0] = pin
+    edited = model.sdedit(reference, torch.tensor([True, False]), release).cpu()
 
     curve = torch.linspace(-2, 2, 200)
     fig, axes = plt.subplots(1, 3, figsize=(12, 4), sharex=True, sharey=True)
     panels = [('data', data, 'tab:blue'),
               ('unconditional samples', unconditional, 'tab:orange'),
-              (f'SDEdit: dim 0 pinned to +{shift}, release t={release}',
+              (f'SDEdit: dim 0 pinned to {pin}, dim 1 released at t={release}',
                edited, 'tab:green')]
-    for ax, (title, points, color) in zip(axes, panels):
+    for index, (ax, (title, points, color)) in enumerate(zip(axes, panels)):
         ax.plot(curve, (3 * curve).sin(), color='k', lw=1, alpha=0.4, zorder=0)
         ax.scatter(points[:, 0], points[:, 1], s=4, alpha=0.4, color=color)
         ax.set_title(title, fontsize=9)
         ax.set_xlabel('dim 0  ("e")')
+        if index == 2:
+            ax.axvline(pin, color='k', ls='--', lw=1, alpha=0.6)
+            ax.axhline(target, color='k', ls=':', lw=1, alpha=0.6)
     axes[0].set_ylabel('dim 1  ("z")')
 
     path = Path(__file__).parent / 'figures' / 'diffusion_toy.png'
@@ -249,13 +257,14 @@ def _toy_main():
     fig.savefig(path, dpi=150)
     plt.close(fig)
 
-    # The claim the figure makes, checked numerically.
-    on_curve = (edited[:, 1] - (3 * edited[:, 0]).sin()).abs().mean()
-    pinned = (edited[:, 0] - reference[:, 0]).abs().max()
+    # The claims the figure makes, checked numerically.
     print(f"unconditional |dim1 - sin(3 dim0)| = "
-          f"{(unconditional[:, 1] - (3 * unconditional[:, 0]).sin()).abs().mean():.4f}")
-    print(f"SDEdit        |dim1 - sin(3 dim0)| = {on_curve:.4f}  (data noise 0.15)")
-    print(f"SDEdit        max |dim0 - pinned|  = {pinned:.2e}")
+          f"{(unconditional[:, 1] - (3 * unconditional[:, 0]).sin()).abs().mean():.4f}"
+          f"   (data noise gives 0.12)")
+    print(f"SDEdit max |dim0 - {pin}|          = "
+          f"{(edited[:, 0] - pin).abs().max():.2e}")
+    print(f"SDEdit |dim1 - sin(3*{pin})|       = "
+          f"{(edited[:, 1] - target).abs().mean():.4f}   (target dim1 = {target:.3f})")
     print(f"wrote {path}")
 
 
