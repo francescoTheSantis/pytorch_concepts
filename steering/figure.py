@@ -47,18 +47,26 @@ def _value(concepts: Concepts, name: str, index: int):
 
 
 def _label(concepts: Concepts, index: int) -> str:
-    """``4, green`` -- the concept set of one column."""
-    return f"{_value(concepts, 'digit', index)}, {_value(concepts, 'color', index)}"
+    """``4, green`` -- the *known* concepts of one column, in declaration order.
+
+    Driven by the keys rather than hard-coded, so the no-digit dataset simply
+    prints ``green``.
+    """
+    return ', '.join(str(_value(concepts, n, index)) for n in concepts)
 
 
 def _intervention_label(c_tilde: Concepts, index: int) -> str:
     """What was clamped, and what the MRF made of it.
 
     ``color`` is the only intervened concept, so it appears on both lines by
-    construction; ``digit`` on the second line is the part BP re-sampled.
+    construction; anything else on the second line is what BP re-sampled. When
+    colour is the only known concept there is nothing to re-sample, so the second
+    line is dropped rather than repeating the first.
     """
-    return (f"do color={_value(c_tilde, 'color', index)}\n"
-            f"→ {_label(c_tilde, index)}")
+    clamped = f"do color={_value(c_tilde, 'color', index)}"
+    if set(c_tilde) == {'color'}:
+        return clamped
+    return f"{clamped}\n→ {_label(c_tilde, index)}"
 
 
 @torch.no_grad()

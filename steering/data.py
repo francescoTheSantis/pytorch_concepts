@@ -13,11 +13,39 @@ import torch.nn.functional as F
 from torch_concepts.data.datasets.mnist import default_root, load_mnist
 from torch_concepts.data.utils import colorize
 
-#: Concept cardinalities, in the order the concept vector concatenates them.
+#: Cardinality of every concept the images carry, in concept-vector order.
 CARDS = {'digit': 10, 'color': 2}
 COLOR_NAMES = ('red', 'green')
 #: ``colorize`` wants an RGB channel; the concept value is the palette position.
 COLOR_CHANNELS = torch.tensor([0, 1])
+
+#: The two settings, as ``(known concepts, MRF factor scopes)``.
+#:
+#: ``colormnist`` is the full setting: both concepts are annotated and the MRF
+#: has a pairwise factor coupling them, so intervening on the colour propagates
+#: to the digit.
+#:
+#: ``colormnist-no-digit`` drops the digit from the *annotation* only. The images
+#: are identical and the digit still drives the colour with the same 90%
+#: correlation -- it is simply unobserved, so nothing downstream can represent it
+#: except the pre-trained model's own latent ``z``. That makes it the sharper test
+#: of SDEdit: ``e~`` carries a new colour and nothing else, so if the steered image
+#: keeps its digit, ``z`` is what kept it. The MRF degenerates to a single unary
+#: factor fitting ``p(colour)``, and with the only concept clamped BP has nothing
+#: left to propagate; the pipeline runs unchanged anyway rather than special-casing
+#: it away.
+DATASETS = {
+    'colormnist': (['digit', 'color'], [('digit', 'color')]),
+    'colormnist-no-digit': (['color'], [('color',)]),
+}
+
+
+def dataset_spec(name: str):
+    """``(cards, scopes)`` for a dataset name -- the concepts a run may see."""
+    if name not in DATASETS:
+        raise ValueError(f"unknown dataset {name!r}; pick from {list(DATASETS)}.")
+    names, scopes = DATASETS[name]
+    return {n: CARDS[n] for n in names}, scopes
 
 
 def one_hot(index: torch.Tensor, k: int) -> torch.Tensor:
@@ -55,10 +83,15 @@ def load_colormnist(
     return colorize(images, COLOR_CHANNELS[color]), digits, color
 
 
-def concept_codes(digits: torch.Tensor, color: torch.Tensor) -> dict:
-    """The concept dict every other module speaks: name -> one-hot ``(N, K)``."""
-    return {'digit': one_hot(digits, CARDS['digit']),
-            'color': one_hot(color, CARDS['color'])}
+def concept_codes(digits: torch.Tensor, color: torch.Tensor, names=None) -> dict:
+    """The concept dict every other module speaks: name -> one-hot ``(N, K)``.
+
+    ``names`` restricts the result to the concepts a dataset declares known; the
+    omitted ones are still what generated the images, just not annotated.
+    """
+    everything = {'digit': one_hot(digits, CARDS['digit']),
+                  'color': one_hot(color, CARDS['color'])}
+    return {n: everything[n] for n in (names or everything)}
 
 
 if __name__ == '__main__':

@@ -33,10 +33,15 @@ def energy_net(in_features: int, hidden: int = 64) -> nn.Module:
 
 def build_mrf(
     cards: Dict[str, int],
-    edges: Sequence[Tuple[str, str]],
+    scopes: Sequence[Tuple[str, ...]],
     hidden: int = 64,
 ) -> Tuple[MarkovNetwork, Dict[str, ConceptVariable]]:
-    """One categorical variable per concept, one pairwise potential per edge.
+    """One categorical variable per concept, one potential per scope.
+
+    A scope is any tuple of concept names, so this covers a pairwise edge
+    ``('digit', 'color')`` and a unary factor ``('color',)`` alike -- the latter
+    being what a single-concept dataset degenerates to, where the field just fits
+    that concept's marginal.
 
     ``OneHotCategorical`` rather than a relaxed family: BP enumerates states, it
     never samples, so the straight-through machinery would be dead weight.
@@ -45,10 +50,11 @@ def build_mrf(
                  for name, k in cards.items()}
     factors = [
         ParametricPotential(
-            scope=[variables[a], variables[b]], name=f'phi_{a}_{b}',
-            parametrization=energy_net(cards[a] + cards[b], hidden),
+            scope=[variables[n] for n in scope],
+            name='phi_' + '_'.join(scope),
+            parametrization=energy_net(sum(cards[n] for n in scope), hidden),
         )
-        for a, b in edges
+        for scope in scopes
     ]
     return MarkovNetwork(variables=list(variables.values()), factors=factors), variables
 
@@ -196,7 +202,7 @@ def _toy_main():
     print("Ising triangle over three binary variables (J = %.1f)" % coupling)
     print("  true joint:", " ".join(f"{p:.3f}" for p in truth))
 
-    mrf, _ = build_mrf(cards, edges=[('a', 'b'), ('b', 'c'), ('c', 'a')])
+    mrf, _ = build_mrf(cards, scopes=[('a', 'b'), ('b', 'c'), ('c', 'a')])
     empirical = train_mrf(mrf, cards, codes)
     print("  empirical :", " ".join(f"{p:.3f}" for p in empirical))
     print("  learned   :", " ".join(f"{p:.3f}" for p in log_joint(

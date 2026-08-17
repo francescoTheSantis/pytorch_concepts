@@ -6,8 +6,24 @@
          -> DDPM over [z ; e]          the joint
          -> SDEdit                     new e~, partially-kept z -> z~
 
+Two settings, same code path (``--dataset``):
+
+``colormnist``
+    Both concepts annotated. Intervening on the colour propagates to the digit
+    through the MRF, so ``c~`` differs from the observed concept set in *both*
+    coordinates.
+
+``colormnist-no-digit``
+    Only the colour is annotated. The images and their digit/colour correlation
+    are unchanged -- the digit is simply unobserved, so it exists nowhere in the
+    pipeline except the pre-trained ``z``. The MRF degenerates to a unary factor
+    over the colour and has nothing to propagate, which is the point: ``e~``
+    carries a new colour and nothing else, so a steered image that keeps its digit
+    proves ``z`` carried it through SDEdit. The grey-scale shape correlation in
+    the run's report is that claim as a number.
+
 Run ``python -m steering.main``. Trained pieces are cached under
-``steering/artifacts/``; pass ``--fresh`` to retrain.
+``steering/artifacts/`` per dataset; pass ``--fresh`` to retrain.
 """
 import argparse
 from pathlib import Path
@@ -19,7 +35,8 @@ from torch_concepts import seed_everything
 from torch_concepts.nn import BeliefPropagation
 from steering import resolve_device
 from steering.concept_vae import ConceptVAE, round_trip_accuracy, train_concept_vae
-from steering.data import CARDS, COLOR_NAMES, concept_codes, load_colormnist, one_hot
+from steering.data import (COLOR_NAMES, DATASETS, concept_codes, dataset_spec,
+                           load_colormnist, one_hot)
 from steering.diffusion import DDPM, train_ddpm
 from steering.figure import make_figure
 from steering.mrf import (build_mrf, exact_conditional, log_joint, make_propagator,
@@ -28,11 +45,14 @@ from steering.pretrain import ConvAE, ConvVAE, pretrain, reconstruct
 
 ARTIFACTS = Path(__file__).parent / 'artifacts'
 FIGURES = Path(__file__).parent / 'figures'
-EDGES = [('digit', 'color')]
 
 
 def parse_args(argv=None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--dataset', choices=tuple(DATASETS), default='colormnist',
+                        help="'colormnist' annotates digit and colour; "
+                             "'colormnist-no-digit' annotates only the colour, "
+                             'leaving the digit to live entirely in z')
     parser.add_argument('--pretrained', choices=('ae', 'vae'), default='ae',
                         help='the concept-agnostic model to steer')
     parser.add_argument('--latent', type=int, default=32,
@@ -78,17 +98,22 @@ def encode_all(fn, data, device, batch_size: int = 512) -> torch.Tensor:
 
 def build(args, device) -> Tuple:
     """Train (or restore) every component. Returns everything the figure needs."""
+    cards, scopes = dataset_spec(args.dataset)
     images, digits, color = load_colormnist(n=args.n_train, seed=args.seed)
-    concepts = concept_codes(digits, color)
-    codes = torch.stack([digits, color], dim=-1)
+    concepts = concept_codes(digits, color, names=cards)
+    # Integer codes for the MRF's histogram, in `cards` order. The unannotated
+    # concepts are dropped here and nowhere else: the images are identical.
+    per_name = {'digit': digits, 'color': color}
+    codes = torch.stack([per_name[n] for n in cards], dim=-1)
 
     pretrained = (ConvAE if args.pretrained == 'ae' else ConvVAE)(args.latent).to(device)
-    cvae = ConceptVAE(CARDS, args.latent).to(device)
-    mrf, _ = build_mrf(CARDS, EDGES)
+    cvae = ConceptVAE(cards, args.latent).to(device)
+    mrf, _ = build_mrf(cards, scopes)
     mrf = mrf.to(device)
     ddpm = DDPM(dim=2 * args.latent, steps=args.diffusion_steps).to(device)
 
-    tag = f'{args.pretrained}_d{args.latent}_n{args.n_train}_t{args.diffusion_steps}_s{args.seed}'
+    tag = (f'{args.dataset}_{args.pretrained}_d{args.latent}_n{args.n_train}'
+           f'_t{args.diffusion_steps}_s{args.seed}')
     checkpoint = ARTIFACTS / f'{tag}.pt'
 
     if checkpoint.exists() and not args.fresh:
@@ -103,9 +128,9 @@ def build(args, device) -> Tuple:
         pretrained, _, _ = pretrain(images, kind=args.pretrained, latent=args.latent,
                                     epochs=args.epochs_pretrain, device=device)
         print("\n[2/4] fitting the MRF over the concepts")
-        empirical = train_mrf(mrf, CARDS, codes.to(device))
+        empirical = train_mrf(mrf, cards, codes.to(device))
         print("\n[3/4] fitting the concept VAE")
-        cvae, _ = train_concept_vae(concepts, CARDS, emb_size=args.latent,
+        cvae, _ = train_concept_vae(concepts, cards, emb_size=args.latent,
                                     epochs=args.epochs_cvae, beta=args.beta,
                                     device=device)
         print("\n[4/4] fitting the DDPM over [z ; e]")
@@ -122,11 +147,12 @@ def build(args, device) -> Tuple:
     for module in (pretrained, cvae, mrf, ddpm):
         module.eval()
     z = encode_all(pretrained.encode, images, device)
-    return images, digits, color, concepts, z, pretrained, cvae, mrf, ddpm, empirical
+    return (images, digits, color, concepts, cards, z,
+            pretrained, cvae, mrf, ddpm, empirical)
 
 
 @torch.no_grad()
-def diagnostics(images, concepts, z, pretrained, cvae, mrf, empirical, device):
+def diagnostics(images, concepts, cards, z, pretrained, cvae, mrf, empirical, device):
     """Everything that has to be true for the figure to mean anything."""
     print("\n-- diagnostics --")
     recon = reconstruct(pretrained.decoder, z[:512], device)
@@ -137,37 +163,61 @@ def diagnostics(images, concepts, z, pretrained, cvae, mrf, empirical, device):
     for name, value in accuracy.items():
         print(f"concept round-trip accuracy {name:6s}  {value:.3f}")
 
-    learned = log_joint(mrf, state_grid(CARDS, device)[1]).exp()
+    learned = log_joint(mrf, state_grid(cards, device)[1]).exp()
     print(f"MRF joint max |learned - empirical|  "
           f"{(learned - empirical).abs().max():.2e}")
+
+    # Propagation only means something when clamping the colour leaves something
+    # free. With colour the only annotated concept the field has nothing to
+    # propagate to, which is the point of that dataset, not a failure.
+    free = [n for n in cards if n != 'color']
+    if not free:
+        print("MRF has no free concept given colour -- nothing to propagate")
+        return
 
     # BP must agree with exact enumeration -- on this graph it should be exact.
     bp = BeliefPropagation(mrf, iters=20)
     worst = 0.0
-    for value in range(CARDS['color']):
-        marginal = bp.query(query=['digit'],
-                            evidence={'color': one_hot(torch.tensor([value]),
-                                                       CARDS['color']).to(device)}).probs
-        exact = exact_conditional(mrf, CARDS, {'color': value})['digit']
-        got = torch.as_tensor(marginal['digit'])[0]
-        worst = max(worst, (got - exact).abs().max().item())
-        even = got[::2].sum()
-        print(f"p(even digit | color={COLOR_NAMES[value]:5s}) = {even:.3f}")
+    for value in range(cards['color']):
+        evidence = {'color': one_hot(torch.tensor([value]), cards['color']).to(device)}
+        marginal = bp.query(query=free, evidence=evidence).probs
+        exact = exact_conditional(mrf, cards, {'color': value})
+        for name in free:
+            got = torch.as_tensor(marginal[name])[0]
+            worst = max(worst, (got - exact[name]).abs().max().item())
+        if 'digit' in free:
+            even = torch.as_tensor(marginal['digit'])[0][::2].sum()
+            print(f"p(even digit | color={COLOR_NAMES[value]:5s}) = {even:.3f}")
     print(f"BP vs exact enumeration              {worst:.2e}")
 
 
 @torch.no_grad()
-def report_steering(z_tilde, c_tilde, pretrained, device):
-    """Did the decoded image actually take the intended colour?
+def report_steering(z, z_tilde, c_tilde, pretrained, device):
+    """The two things steering has to get right, measured without a classifier.
 
-    ``colorize`` puts all the intensity in one RGB channel, so the brighter of
-    the red and green channels is an exact read-out of the colour concept.
+    *Colour changed*: ``colorize`` puts all the intensity in one RGB channel, so
+    the brighter of the red and green channels reads the colour concept exactly.
+
+    *Shape kept*: the correlation between the grey-scale (channel-summed)
+    reconstruction and the steered image. Summing over RGB discards precisely the
+    thing that was supposed to change, leaving the stroke pattern -- so a high
+    value means the digit survived the recolouring. This is the headline number
+    for ``colormnist-no-digit``, where the digit is nowhere in ``e~`` and can only
+    have been carried by ``z``.
     """
+    before = reconstruct(pretrained.decoder, z, device)
     steered = reconstruct(pretrained.decoder, z_tilde, device)
+
     got = steered.flatten(2).sum(-1)[:, :2].argmax(-1)      # 0 = red, 1 = green
     want = c_tilde['color'].argmax(-1).cpu()
     print(f"\nintervened images showing the intended colour: "
           f"{(got == want).float().mean():.2f} ({int((got == want).sum())}/{len(want)})")
+
+    a, b = before.sum(1).flatten(1), steered.sum(1).flatten(1)
+    a, b = a - a.mean(1, keepdim=True), b - b.mean(1, keepdim=True)
+    shape = ((a * b).sum(1) / (a.norm(dim=1) * b.norm(dim=1)).clamp_min(1e-8))
+    print(f"grey-scale shape correlation before/after:     {shape.mean():.3f} "
+          f"(1.0 = digit perfectly preserved)")
 
 
 def main(argv=None):
@@ -176,14 +226,14 @@ def main(argv=None):
     print(f"device: {device}")
     seed_everything(args.seed)
 
-    (images, digits, color, concepts, z,
+    (images, digits, color, concepts, cards, z,
      pretrained, cvae, mrf, ddpm, empirical) = build(args, device)
 
-    diagnostics(images, concepts, z, pretrained, cvae, mrf, empirical, device)
+    diagnostics(images, concepts, cards, z, pretrained, cvae, mrf, empirical, device)
 
     columns = torch.arange(args.columns)
-    propagate = make_propagator(mrf, CARDS)
-    path = FIGURES / f'steering_{args.pretrained}.png'
+    propagate = make_propagator(mrf, cards)
+    path = FIGURES / f'steering_{args.dataset}_{args.pretrained}.png'
     z_tilde, c_tilde = make_figure(
         images=images[columns],
         z=z[columns],
@@ -197,7 +247,7 @@ def main(argv=None):
         resample=args.resample,
         path=path,
     )
-    report_steering(z_tilde, c_tilde, pretrained, device)
+    report_steering(z[columns], z_tilde, c_tilde, pretrained, device)
     print(f"wrote {path}")
 
 
