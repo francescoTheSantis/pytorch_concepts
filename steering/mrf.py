@@ -7,7 +7,7 @@ Run ``python -m steering.mrf`` for a self-contained test on three correlated
 binary variables arranged in a triangle -- a genuinely loopy graph, where BP is
 an approximation rather than a formality, checked against exact enumeration.
 """
-from typing import Callable, Dict, List, Sequence, Tuple
+from typing import Callable, Dict, Sequence, Tuple
 
 import torch
 import torch.nn as nn

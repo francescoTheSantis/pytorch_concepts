@@ -14,7 +14,6 @@ from pathlib import Path
 from typing import Tuple
 
 import torch
-import torch.nn.functional as F
 
 from torch_concepts import seed_everything
 from steering import resolve_device
