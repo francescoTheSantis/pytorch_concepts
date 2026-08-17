@@ -1,0 +1,31 @@
+# Grid for `python -m steering.sweep`.
+#
+# Every combination of `params` is run, with `common` applied to all of them.
+# Keys match `steering.main`'s flags with `-` written as `_`.
+#
+# Ordering matters for cost, and the runner relies on it: `release_step` is the
+# only swept knob that does NOT enter the checkpoint tag, because it is applied
+# at sampling time and changes nothing about the trained models. So the runner
+# varies it fastest and every value after the first restores the cached
+# checkpoint — so the number of *trainings* is len(dataset) x len(pretrained),
+# however long the release_step list gets. `--dry-run` prints the run count.
+params:
+  dataset: [colormnist, colormnist-no-digit]
+  pretrained: [ae, vae]
+  # 0 = z untouched (control: the steered image IS the reconstruction, so colour
+  # accuracy should be 0.00 and shape correlation 1.000 — a free sanity anchor).
+  # diffusion_steps = full regeneration of z from noise.
+  release_step: [0, 10, 20, 50, 80, 160, 240, 400]
+
+common:
+  latent: 32
+  n_train: 10000
+  diffusion_steps: 400
+  resample: 10
+  epochs_pretrain: 15
+  epochs_cvae: 60
+  epochs_ddpm: 600
+  beta: 0.5
+  columns: 8
+  seed: 0
+  device: auto

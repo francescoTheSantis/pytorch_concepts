@@ -155,19 +155,25 @@ def build(args, device) -> Tuple:
 
 @torch.no_grad()
 def diagnostics(images, concepts, cards, z, pretrained, cvae, mrf, empirical, device):
-    """Everything that has to be true for the figure to mean anything."""
+    """Everything that has to be true for the figure to mean anything.
+
+    Returns the numbers as a dict as well as printing them, so a sweep can
+    tabulate them without re-deriving anything.
+    """
     print("\n-- diagnostics --")
     recon = reconstruct(pretrained.decoder, z[:512], device)
-    print(f"pre-trained reconstruction MSE      {(recon - images[:512]).pow(2).mean():.5f}")
+    metrics = {'recon_mse': (recon - images[:512]).pow(2).mean().item()}
+    print(f"pre-trained reconstruction MSE      {metrics['recon_mse']:.5f}")
 
     accuracy = round_trip_accuracy(cvae, {k: v[:2000].to(device)
                                           for k, v in concepts.items()})
     for name, value in accuracy.items():
+        metrics[f'roundtrip_{name}'] = value
         print(f"concept round-trip accuracy {name:6s}  {value:.3f}")
 
     learned = log_joint(mrf, state_grid(cards, device)[1]).exp()
-    print(f"MRF joint max |learned - empirical|  "
-          f"{(learned - empirical).abs().max():.2e}")
+    metrics['mrf_joint_err'] = (learned - empirical).abs().max().item()
+    print(f"MRF joint max |learned - empirical|  {metrics['mrf_joint_err']:.2e}")
 
     # Propagation only means something when clamping the colour leaves something
     # free. With colour the only annotated concept the field has nothing to
@@ -175,7 +181,7 @@ def diagnostics(images, concepts, cards, z, pretrained, cvae, mrf, empirical, de
     free = [n for n in cards if n != 'color']
     if not free:
         print("MRF has no free concept given colour -- nothing to propagate")
-        return
+        return metrics
 
     # BP must agree with exact enumeration -- on this graph it should be exact.
     bp = BeliefPropagation(mrf, iters=20)
@@ -188,9 +194,12 @@ def diagnostics(images, concepts, cards, z, pretrained, cvae, mrf, empirical, de
             got = torch.as_tensor(marginal[name])[0]
             worst = max(worst, (got - exact[name]).abs().max().item())
         if 'digit' in free:
-            even = torch.as_tensor(marginal['digit'])[0][::2].sum()
+            even = torch.as_tensor(marginal['digit'])[0][::2].sum().item()
+            metrics[f'p_even_given_{COLOR_NAMES[value]}'] = even
             print(f"p(even digit | color={COLOR_NAMES[value]:5s}) = {even:.3f}")
+    metrics['bp_vs_exact'] = worst
     print(f"BP vs exact enumeration              {worst:.2e}")
+    return metrics
 
 
 @torch.no_grad()
@@ -212,14 +221,18 @@ def report_steering(z, z_tilde, c_tilde, pretrained, device):
 
     got = steered.flatten(2).sum(-1)[:, :2].argmax(-1)      # 0 = red, 1 = green
     want = c_tilde['color'].argmax(-1).cpu()
-    print(f"\nintervened images showing the intended colour: "
-          f"{(got == want).float().mean():.2f} ({int((got == want).sum())}/{len(want)})")
 
     a, b = before.sum(1).flatten(1), steered.sum(1).flatten(1)
     a, b = a - a.mean(1, keepdim=True), b - b.mean(1, keepdim=True)
-    shape = ((a * b).sum(1) / (a.norm(dim=1) * b.norm(dim=1)).clamp_min(1e-8))
-    print(f"grey-scale shape correlation before/after:     {shape.mean():.3f} "
-          f"(1.0 = digit perfectly preserved)")
+    shape = (a * b).sum(1) / (a.norm(dim=1) * b.norm(dim=1)).clamp_min(1e-8)
+
+    metrics = {'color_accuracy': (got == want).float().mean().item(),
+               'shape_correlation': shape.mean().item()}
+    print(f"\nintervened images showing the intended colour: "
+          f"{metrics['color_accuracy']:.2f} ({int((got == want).sum())}/{len(want)})")
+    print(f"grey-scale shape correlation before/after:     "
+          f"{metrics['shape_correlation']:.3f} (1.0 = digit perfectly preserved)")
+    return metrics
 
 
 def main(argv=None):
@@ -231,11 +244,16 @@ def main(argv=None):
     (images, digits, color, concepts, cards, z,
      pretrained, cvae, mrf, ddpm, empirical) = build(args, device)
 
-    diagnostics(images, concepts, cards, z, pretrained, cvae, mrf, empirical, device)
+    metrics = diagnostics(images, concepts, cards, z, pretrained, cvae, mrf,
+                          empirical, device)
 
     columns = torch.arange(args.columns)
     propagate = make_propagator(mrf, cards)
-    path = FIGURES / f'steering_{args.dataset}_{args.pretrained}.png'
+    # `release_step` is in the filename because it is the one swept knob that
+    # does *not* change the trained models, so a sweep over it reuses one
+    # checkpoint and would otherwise overwrite a single figure repeatedly.
+    path = FIGURES / (f'steering_{args.dataset}_{args.pretrained}'
+                      f'_r{args.release_step}.png')
     z_tilde, c_tilde = make_figure(
         images=images[columns],
         z=z[columns],
@@ -249,8 +267,9 @@ def main(argv=None):
         resample=args.resample,
         path=path,
     )
-    report_steering(z[columns], z_tilde, c_tilde, pretrained, device)
+    metrics.update(report_steering(z[columns], z_tilde, c_tilde, pretrained, device))
     print(f"wrote {path}")
+    return {**metrics, 'figure': path.name}
 
 
 if __name__ == '__main__':
