@@ -65,6 +65,10 @@ def parse_args(argv=None) -> argparse.Namespace:
     parser.add_argument('--release-step', type=int, default=160,
                         help='z is pinned above this step and free below it; '
                              '0 leaves z untouched, --diffusion-steps regenerates it')
+    parser.add_argument('--sampler', choices=('ddpm', 'ddim'), default='ddpm',
+                        help="'ddpm' is Algorithm 2; 'ddim' drops the per-step "
+                             'noise from the free block, keeping z more faithful. '
+                             'Sampling-time only, so it reuses the same checkpoint')
     parser.add_argument('--resample', type=int, default=10,
                         help='RePaint harmonisation iterations per SDEdit step; '
                              '1 is naive replacement and under-conditions')
@@ -203,7 +207,7 @@ def diagnostics(images, concepts, cards, z, pretrained, cvae, mrf, empirical, de
 
 
 @torch.no_grad()
-def report_steering(z, z_tilde, c_tilde, pretrained, device):
+def steering_metrics(z, z_tilde, c_tilde, pretrained, device):
     """The two things steering has to get right, measured without a classifier.
 
     *Colour changed*: ``colorize`` puts all the intensity in one RGB channel, so
@@ -215,6 +219,9 @@ def report_steering(z, z_tilde, c_tilde, pretrained, device):
     value means the digit survived the recolouring. This is the headline number
     for ``colormnist-no-digit``, where the digit is nowhere in ``e~`` and can only
     have been carried by ``z``.
+
+    The two pull against each other as ``release_step`` moves, which is what
+    ``python -m steering.sweep`` traces out.
     """
     before = reconstruct(pretrained.decoder, z, device)
     steered = reconstruct(pretrained.decoder, z_tilde, device)
@@ -226,10 +233,16 @@ def report_steering(z, z_tilde, c_tilde, pretrained, device):
     a, b = a - a.mean(1, keepdim=True), b - b.mean(1, keepdim=True)
     shape = (a * b).sum(1) / (a.norm(dim=1) * b.norm(dim=1)).clamp_min(1e-8)
 
-    metrics = {'color_accuracy': (got == want).float().mean().item(),
-               'shape_correlation': shape.mean().item()}
+    return {'color_accuracy': (got == want).float().mean().item(),
+            'shape_correlation': shape.mean().item(),
+            'n': len(want)}
+
+
+def report_steering(z, z_tilde, c_tilde, pretrained, device):
+    metrics = steering_metrics(z, z_tilde, c_tilde, pretrained, device)
+    hits = round(metrics['color_accuracy'] * metrics['n'])
     print(f"\nintervened images showing the intended colour: "
-          f"{metrics['color_accuracy']:.2f} ({int((got == want).sum())}/{len(want)})")
+          f"{metrics['color_accuracy']:.2f} ({hits}/{metrics['n']})")
     print(f"grey-scale shape correlation before/after:     "
           f"{metrics['shape_correlation']:.3f} (1.0 = digit perfectly preserved)")
     return metrics
@@ -253,7 +266,7 @@ def main(argv=None):
     # does *not* change the trained models, so a sweep over it reuses one
     # checkpoint and would otherwise overwrite a single figure repeatedly.
     path = FIGURES / (f'steering_{args.dataset}_{args.pretrained}'
-                      f'_r{args.release_step}.png')
+                      f'_{args.sampler}_r{args.release_step}.png')
     z_tilde, c_tilde = make_figure(
         images=images[columns],
         z=z[columns],
@@ -265,6 +278,7 @@ def main(argv=None):
         ddpm=ddpm,
         release_step=args.release_step,
         resample=args.resample,
+        sampler=args.sampler,
         path=path,
     )
     metrics.update(report_steering(z[columns], z_tilde, c_tilde, pretrained, device))

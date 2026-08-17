@@ -24,6 +24,7 @@ def intervene(
     ddpm,
     release_step: int,
     resample: int = 10,
+    sampler: str = 'ddpm',
 ) -> Tuple[torch.Tensor, Concepts]:
     """Flip the colour and steer ``z`` to match. Returns ``(z_tilde, c_tilde)``.
 
@@ -37,7 +38,7 @@ def intervene(
     latent = z.shape[-1]
     fixed_mask = torch.arange(latent + e_tilde.shape[-1]) >= latent
     edited = ddpm.sdedit(torch.cat([z, e_tilde], dim=-1), fixed_mask,
-                         release_step, resample)
+                         release_step, resample, sampler)
     return edited[:, :latent], c_tilde
 
 
@@ -81,6 +82,7 @@ def make_figure(
     ddpm,
     release_step: int,
     resample: int,
+    sampler: str,
     path: Path,
 ) -> Tuple[torch.Tensor, Concepts]:
     """Write the 3-row figure. Every argument is already restricted to the
@@ -88,7 +90,7 @@ def make_figure(
     import matplotlib.pyplot as plt
 
     z_tilde, c_tilde = intervene(z, color, propagate, cvae, ddpm,
-                                 release_step, resample)
+                                 release_step, resample, sampler)
     rows = [images, reconstruct(decoder, z), reconstruct(decoder, z_tilde)]
     names = ['original', 'reconstruction', f'intervened (release t={release_step})']
 

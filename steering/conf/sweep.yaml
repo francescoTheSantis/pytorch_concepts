@@ -12,10 +12,29 @@
 params:
   dataset: [colormnist, colormnist-no-digit]
   pretrained: [ae, vae]
-  # 0 = z untouched (control: the steered image IS the reconstruction, so colour
-  # accuracy should be 0.00 and shape correlation 1.000 — a free sanity anchor).
+  # Sampling-time, like release_step, so it costs no extra training. 'ddim' is
+  # eta=0: the free block's trajectory becomes a deterministic function of its
+  # starting point, so DDPM's per-step noise stops walking z away from where
+  # SDEdit put it. Expect a higher shape correlation at the same release_step.
+  sampler: [ddpm, ddim]
+  # Also sampling-time. NOT a free knob: RePaint's jump-back is a forward
+  # diffusion step, so more cycles mix the chain toward p(x|pinned) and forget
+  # what SDEdit put in the free block. 1 vs 10 is the honest span — 10 conditions
+  # tightly and forgets z, 1 keeps z and under-conditions.
+  resample: [1, 10]
+  # 0 = z untouched, so the steered image IS the reconstruction. Two anchors,
+  # and they check different things:
+  #   shape correlation == 1.000 is unconditional — it only says SDEdit left z
+  #     alone, and it holds even for an untrained model (verified: sdedit at
+  #     release_step 0 round-trips z to 5e-07, float32 normalise/denormalise).
+  #   colour accuracy == 0.00 ALSO requires the pre-trained decoder to render
+  #     the colour faithfully: `want` is the flipped colour and the untouched
+  #     reconstruction still shows the original one, so 0.00 means "the decoder
+  #     reproduces colour correctly AND z was untouched". A half-trained model
+  #     reads ~0.50 here (random channel argmax on a near-black reconstruction),
+  #     which indicts the decoder, not the steering.
   # diffusion_steps = full regeneration of z from noise.
-  release_step: [0, 10, 20, 50, 80, 160, 240, 400]
+  release_step: [0, 10, 20, 50, 80, 160, 240, 400, 500, 600, 700, 800, 900]
 
 common:
   latent: 32

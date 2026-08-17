@@ -94,22 +94,50 @@ class DDPM(nn.Module):
         noise = torch.randn_like(x0)
         return nn.functional.mse_loss(self.eps(self.q_sample(x0, t, noise), t), noise)
 
-    def _reverse_step(self, x_t: torch.Tensor, t: int) -> torch.Tensor:
-        """One step of Algorithm 2: ``x_t -> x_{t-1}``."""
+    def _reverse_step(self, x_t: torch.Tensor, t: int,
+                      sampler: str = 'ddpm') -> torch.Tensor:
+        """One reverse step ``x_t -> x_{t-1}``.
+
+        ``'ddpm'`` is Ho et al. Algorithm 2 verbatim, with ``sigma_t^2 = beta_t``.
+
+        ``'ddim'`` is Song et al. (2021) eq. 12 at ``eta = 0``: the step keeps the
+        predicted ``x_0`` and re-noises it *deterministically* along the same
+        ``eps``, injecting nothing. It matters for steering because DDPM's
+        per-step ``sigma_t z`` is precisely what walks the free block away from
+        where SDEdit started it -- with ``eta = 0`` the trajectory is a
+        deterministic function of the initial state, so whatever of ``z`` survived
+        the forward noising is carried through instead of being resampled away.
+
+        Note this does not make :meth:`sdedit` deterministic overall: the initial
+        ``q_sample``, the pinned block's re-noising, and RePaint's jump-back all
+        still draw noise. It removes the noise from the *free block's trajectory*,
+        which is the part that was losing the digit.
+        """
         step = torch.full((len(x_t),), t, device=x_t.device, dtype=torch.long)
-        alpha, a_bar = self.alphas[t - 1], self.alphas_cumprod[t]
-        mean = (x_t - (1 - alpha) / (1 - a_bar).sqrt() * self.eps(x_t, step)) / alpha.sqrt()
+        a_bar = self.alphas_cumprod[t]
+        eps = self.eps(x_t, step)
+
+        if sampler == 'ddim':
+            a_prev = self.alphas_cumprod[t - 1]
+            x0_hat = (x_t - (1 - a_bar).sqrt() * eps) / a_bar.sqrt()
+            # a_prev is 1 at t = 1, so the last step returns x0_hat exactly.
+            return a_prev.sqrt() * x0_hat + (1 - a_prev).sqrt() * eps
+
+        if sampler != 'ddpm':
+            raise ValueError(f"sampler must be 'ddpm' or 'ddim', got {sampler!r}.")
+        alpha = self.alphas[t - 1]
+        mean = (x_t - (1 - alpha) / (1 - a_bar).sqrt() * eps) / alpha.sqrt()
         if t == 1:
             return mean
         return mean + self.betas[t - 1].sqrt() * torch.randn_like(x_t)
 
     # -- sampling --------------------------------------------------------------
     @torch.no_grad()
-    def sample(self, n: int) -> torch.Tensor:
-        """Algorithm 2, from pure noise."""
+    def sample(self, n: int, sampler: str = 'ddpm') -> torch.Tensor:
+        """Reverse process from pure noise; see :meth:`_reverse_step` for ``sampler``."""
         x = torch.randn(n, self.dim, device=self.mean.device)
         for t in range(self.steps, 0, -1):
-            x = self._reverse_step(x, t)
+            x = self._reverse_step(x, t, sampler)
         return self.denormalize(x)
 
     @torch.no_grad()
@@ -119,6 +147,7 @@ class DDPM(nn.Module):
         fixed_mask: torch.Tensor,
         release_step: int,
         resample: int = 10,
+        sampler: str = 'ddpm',
     ) -> torch.Tensor:
         """Reverse diffusion with part of the vector pinned to ``reference``.
 
@@ -155,6 +184,24 @@ class DDPM(nn.Module):
         So do not read ``resample=1`` as "the plain algorithm, slightly worse" --
         it is a visibly different distribution.
 
+        **It is not free, and it is not orthogonal to ``release_step``.** The
+        jump-back is a forward diffusion step, so repeated cycles mix the chain
+        toward ``p(x | pinned)`` -- which is precisely *forgetting* the state
+        SDEdit started the free block in. Harmonisation and faithfulness are the
+        same axis pulled in opposite directions. Measured on a toy whose pinned
+        block is independent of its free block (so anything the free block retains
+        can only have come from SDEdit), as correlation with the reference::
+
+            sampler  resample   rel=20  rel=40  rel=80  rel=160
+            ddpm     1           0.891   0.638   0.174    0.044
+            ddpm     10          0.367   0.017   0.013   -0.037
+            ddim     1           0.942   0.790   0.397    0.005
+            ddim     10          0.578   0.126   0.039   -0.018
+
+        Read off that table: ``resample`` costs more faithfulness than
+        ``release_step`` does, and ``'ddim'`` is the only setting here that buys
+        faithfulness back without weakening the conditioning.
+
         Args:
             reference: ``(B, dim)`` un-normalised, e.g. ``[z ; e~]``.
             fixed_mask: ``(dim,)`` bool. ``True`` coordinates (the concept
@@ -165,6 +212,10 @@ class DDPM(nn.Module):
                 noise; in between is the SDEdit strength knob.
             resample: RePaint harmonisation iterations per step. ``1`` is naive
                 replacement, which under-conditions -- see the table above.
+            sampler: ``'ddpm'`` or ``'ddim'``; see :meth:`_reverse_step`. ``'ddim'``
+                drops the per-step noise from the free block's trajectory, which
+                is the other way to keep ``z`` faithful besides a low
+                ``release_step``.
 
         Returns:
             ``(B, dim)`` un-normalised.
@@ -182,7 +233,7 @@ class DDPM(nn.Module):
         x = self.q_sample(reference, release_step)
         for t in range(release_step, 0, -1):
             for iteration in range(resample):
-                x = self._reverse_step(x, t)
+                x = self._reverse_step(x, t, sampler)
                 # The fixed block is re-pinned at every step, including the last,
                 # so it ends exactly on its reference value. The free block is not
                 # touched again -- it is released from here down to t = 0.
