@@ -14,13 +14,14 @@ Two settings, same code path (``--dataset``):
     coordinates.
 
 ``colormnist-no-digit``
-    Only the colour is annotated. The images and their digit/colour correlation
-    are unchanged -- the digit is simply unobserved, so it exists nowhere in the
-    pipeline except the pre-trained ``z``. The MRF degenerates to a unary factor
-    over the colour and has nothing to propagate, which is the point: ``e~``
-    carries a new colour and nothing else, so a steered image that keeps its digit
-    proves ``z`` carried it through SDEdit. The grey-scale shape correlation in
-    the run's report is that claim as a number.
+    Only the colour is annotated, and the colour is drawn independently of the
+    digit. The digit is unobserved, so it exists nowhere in the pipeline except
+    the pre-trained ``z``. The MRF degenerates to a unary factor over the colour
+    and has nothing to propagate, which is the point: ``e~`` carries a new colour
+    and nothing else, so a steered image that keeps its digit proves ``z`` carried
+    it through SDEdit. The grey-scale shape correlation in the run's report is
+    that claim as a number, and the decorrelation is what stops it being
+    confounded -- see ``steering.data.DATASETS``.
 
 Run ``python -m steering.main``. Trained pieces are cached under
 ``steering/artifacts/`` per dataset; pass ``--fresh`` to retrain.
@@ -98,8 +99,9 @@ def encode_all(fn, data, device, batch_size: int = 512) -> torch.Tensor:
 
 def build(args, device) -> Tuple:
     """Train (or restore) every component. Returns everything the figure needs."""
-    cards, scopes = dataset_spec(args.dataset)
-    images, digits, color = load_colormnist(n=args.n_train, seed=args.seed)
+    cards, scopes, p_agree = dataset_spec(args.dataset)
+    images, digits, color = load_colormnist(n=args.n_train, p_agree=p_agree,
+                                            seed=args.seed)
     concepts = concept_codes(digits, color, names=cards)
     # Integer codes for the MRF's histogram, in `cards` order. The unannotated
     # concepts are dropped here and nowhere else: the images are identical.

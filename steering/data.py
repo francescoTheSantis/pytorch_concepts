@@ -19,33 +19,44 @@ COLOR_NAMES = ('red', 'green')
 #: ``colorize`` wants an RGB channel; the concept value is the palette position.
 COLOR_CHANNELS = torch.tensor([0, 1])
 
-#: The two settings, as ``(known concepts, MRF factor scopes)``.
+#: The two settings, as ``(known concepts, MRF factor scopes, p_agree)``.
 #:
-#: ``colormnist`` is the full setting: both concepts are annotated and the MRF
-#: has a pairwise factor coupling them, so intervening on the colour propagates
-#: to the digit.
+#: ``colormnist`` is the full setting: both concepts are annotated, coloured at
+#: ``p_agree = 0.9``, and the MRF has a pairwise factor coupling them, so
+#: intervening on the colour propagates to the digit.
 #:
-#: ``colormnist-no-digit`` drops the digit from the *annotation* only. The images
-#: are identical and the digit still drives the colour with the same 90%
-#: correlation -- it is simply unobserved, so nothing downstream can represent it
-#: except the pre-trained model's own latent ``z``. That makes it the sharper test
-#: of SDEdit: ``e~`` carries a new colour and nothing else, so if the steered image
-#: keeps its digit, ``z`` is what kept it. The MRF degenerates to a single unary
-#: factor fitting ``p(colour)``, and with the only concept clamped BP has nothing
-#: left to propagate; the pipeline runs unchanged anyway rather than special-casing
-#: it away.
+#: ``colormnist-no-digit`` drops the digit from the annotation **and** decorrelates
+#: it from the colour (``p_agree = 0.5``, i.e. an independent fair coin). The digit
+#: still exists and still drives the image; it is simply unobserved, so nothing
+#: downstream can represent it except the pre-trained model's own latent ``z``.
+#: That makes it the sharper test of SDEdit: ``e~`` carries a new colour and
+#: nothing else, so a steered image that keeps its digit proves ``z`` kept it.
+#:
+#: The decorrelation is what makes that inference valid. Leaving ``p_agree`` at
+#: 0.9 while hiding the digit would put a colour flip *in conflict with the joint*
+#: the DDPM learned -- green co-occurs with even-digit ``z``, so recolouring an odd
+#: digit green lands in a low-density region and the sampler is under pressure to
+#: move ``z``'s digit content too. Any loss of digit identity would then be
+#: ambiguous between "SDEdit failed to preserve ``z``" and "the model correctly
+#: followed a correlation we built in". At ``p_agree = 0.5`` colour and digit are
+#: independent, so the only consistent response to a colour flip is to leave the
+#: digit alone, and the shape correlation measures exactly one thing.
+#:
+#: The MRF degenerates to a single unary factor fitting ``p(colour)``, and with the
+#: only concept clamped BP has nothing left to propagate; the pipeline runs
+#: unchanged anyway rather than special-casing it away.
 DATASETS = {
-    'colormnist': (['digit', 'color'], [('digit', 'color')]),
-    'colormnist-no-digit': (['color'], [('color',)]),
+    'colormnist': (['digit', 'color'], [('digit', 'color')], 0.9),
+    'colormnist-no-digit': (['color'], [('color',)], 0.5),
 }
 
 
 def dataset_spec(name: str):
-    """``(cards, scopes)`` for a dataset name -- the concepts a run may see."""
+    """``(cards, scopes, p_agree)`` -- the concepts a run may see, and the colouring."""
     if name not in DATASETS:
         raise ValueError(f"unknown dataset {name!r}; pick from {list(DATASETS)}.")
-    names, scopes = DATASETS[name]
-    return {n: CARDS[n] for n in names}, scopes
+    names, scopes, p_agree = DATASETS[name]
+    return {n: CARDS[n] for n in names}, scopes, p_agree
 
 
 def one_hot(index: torch.Tensor, k: int) -> torch.Tensor:
