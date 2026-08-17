@@ -129,20 +129,31 @@ class DDPM(nn.Module):
         pinned block lands exactly on its reference value.
 
         ``resample`` is RePaint's harmonisation loop (Lugmayr et al., CVPR 2022,
-        Algorithm 1) and it is **not optional in practice**. Overwriting the
-        pinned block draws it independently of the free block, so the pair is not
-        a sample of the true ``q(x_t)`` and the network scores it off-distribution;
-        the free coordinates then feel only a diluted pull from the pinned ones.
-        Measured on a correlated Gaussian (rho = 0.9) where the conditional is
-        known exactly -- pinning ``x0 = 1.5`` should give ``x1 ~ N(1.35, 0.436^2)``::
+        Algorithm 1) and it earns its cost. Overwriting the pinned block draws it
+        independently of the free block, so the pair is not a sample of the true
+        ``q(x_t)`` and the network scores it off-distribution; the free
+        coordinates then feel only a diluted pull from the pinned ones. Each extra
+        iteration diffuses ``x_{t-1}`` back to ``x_t`` and redoes the step, letting
+        the free block re-harmonise with the pinned one. Cost is linear in it.
+
+        Two measurements, because the damage takes two forms. On a correlated
+        Gaussian (rho = 0.9), where pinning ``x0 = 1.5`` has the exact answer
+        ``x1 ~ N(1.35, 0.436^2)``, naive replacement is **biased toward the prior
+        mean**::
 
             resample    1      2      5      10     20     exact
             x1 mean     0.913  1.106  1.264  1.284  1.274  1.350
             x1 std      0.577  0.495  0.469  0.438  0.415  0.436
 
-        Each extra iteration diffuses ``x_{t-1}`` back to ``x_t`` and redoes the
-        step, letting the free block re-harmonise with the pinned one. Cost is
-        linear in ``resample``.
+        On this module's parabola toy the bias barely moves (-0.09 at every
+        setting) but the conditional is badly **over-dispersed**, which is the
+        failure that actually shows up as a smeared figure::
+
+            resample    1      2      5      10     data floor
+            x1 std      0.408  0.291  0.197  0.143  0.10
+
+        So do not read ``resample=1`` as "the plain algorithm, slightly worse" --
+        it is a visibly different distribution.
 
         Args:
             reference: ``(B, dim)`` un-normalised, e.g. ``[z ; e~]``.
@@ -228,7 +239,18 @@ def _toy_main():
 
     The claim the third panel must show is therefore sharp and easy to read off:
     **every point on the vertical line dim0 = PIN, with dim1 concentrated at
-    sin(3 * PIN)** -- not spread over the curve, and not left where it started.
+    f(PIN)** -- not spread along the curve, and not left where it started.
+
+    The curve is a parabola rather than something wigglier for a reason. This is a
+    test of :meth:`DDPM.sdedit`, so the density has to be one a small MLP fits
+    *exactly*, or a diffuse third panel is unreadable -- it could equally mean the
+    conditioning is weak or the model never learned the manifold. Measured at an
+    identical budget (200 epochs, ~20 s): the parabola reaches unconditional error
+    0.111 against a data noise floor of 0.10, i.e. converged, while ``sin(3x)``
+    over the same range reaches only 0.448 and its SDEdit panel smears over the
+    whole curve. Ho et al.'s other variance choice (``sigma_t^2 = beta_tilde_t``)
+    was tried too and changes little here (0.095), so the sampler stays Algorithm 2
+    as written.
     """
     from pathlib import Path
 
@@ -240,15 +262,18 @@ def _toy_main():
     seed_everything(0)
     device = resolve_device()
     print(f"device: {device}")
-    n, pin, release, shown = 8000, 1.2, 200, 600
     torch.set_num_threads(1)   # tiny MLP: threads cost more than they buy
-    target = math.sin(3 * pin)
+    n, pin, release, shown, noise = 4000, 1.2, 200, 600, 0.1
 
+    def curve(x):
+        return 0.5 * x ** 2 - 1
+
+    target = curve(pin)
     x0 = torch.rand(n, 1) * 4 - 2
-    data = torch.cat([x0, (3 * x0).sin() + 0.15 * torch.randn(n, 1)], dim=-1)
+    data = torch.cat([x0, curve(x0) + noise * torch.randn(n, 1)], dim=-1)
 
-    model = train_ddpm(DDPM(dim=2, steps=200, hidden=128), data, epochs=400,
-                       batch_size=512, device=device)
+    model = train_ddpm(DDPM(dim=2, steps=200, hidden=128), data, epochs=200,
+                       batch_size=256, device=device)
 
     unconditional = model.sample(n).cpu()
 
@@ -257,14 +282,14 @@ def _toy_main():
     reference[:, 0] = pin
     edited = model.sdedit(reference, torch.tensor([True, False]), release).cpu()
 
-    curve = torch.linspace(-2, 2, 200)
+    grid = torch.linspace(-2, 2, 200)
     fig, axes = plt.subplots(1, 3, figsize=(12, 4), sharex=True, sharey=True)
     panels = [('data', data, 'tab:blue'),
               ('unconditional samples', unconditional, 'tab:orange'),
               (f'SDEdit: dim 0 pinned to {pin}, dim 1 released at t={release}',
                edited, 'tab:green')]
     for index, (ax, (title, points, color)) in enumerate(zip(axes, panels)):
-        ax.plot(curve, (3 * curve).sin(), color='k', lw=1, alpha=0.4, zorder=0)
+        ax.plot(grid, curve(grid), color='k', lw=1, alpha=0.4, zorder=0)
         ax.scatter(points[:, 0], points[:, 1], s=4, alpha=0.4, color=color)
         ax.set_title(title, fontsize=9)
         ax.set_xlabel('dim 0  ("e")')
@@ -280,13 +305,12 @@ def _toy_main():
     plt.close(fig)
 
     # The claims the figure makes, checked numerically.
-    print(f"unconditional |dim1 - sin(3 dim0)| = "
-          f"{(unconditional[:, 1] - (3 * unconditional[:, 0]).sin()).abs().mean():.4f}"
-          f"   (data noise gives 0.12)")
-    print(f"SDEdit max |dim0 - {pin}|          = "
-          f"{(edited[:, 0] - pin).abs().max():.2e}")
-    print(f"SDEdit |dim1 - sin(3*{pin})|       = "
-          f"{(edited[:, 1] - target).abs().mean():.4f}   (target dim1 = {target:.3f})")
+    print(f"unconditional |dim1 - f(dim0)|  = "
+          f"{(unconditional[:, 1] - curve(unconditional[:, 0])).abs().mean():.4f}"
+          f"   (data noise floor {noise})")
+    print(f"SDEdit  max |dim0 - {pin}|      = {(edited[:, 0] - pin).abs().max():.2e}")
+    print(f"SDEdit  dim1 mean {edited[:, 1].mean():+.3f} std {edited[:, 1].std():.3f}"
+          f"   (target dim1 = {target:+.3f})")
     print(f"wrote {path}")
 
 

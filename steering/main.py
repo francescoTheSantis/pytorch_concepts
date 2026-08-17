@@ -16,6 +16,7 @@ from typing import Tuple
 import torch
 
 from torch_concepts import seed_everything
+from torch_concepts.nn import BeliefPropagation
 from steering import resolve_device
 from steering.concept_vae import ConceptVAE, round_trip_accuracy, train_concept_vae
 from steering.data import CARDS, COLOR_NAMES, concept_codes, load_colormnist, one_hot
@@ -125,7 +126,7 @@ def build(args, device) -> Tuple:
 
 
 @torch.no_grad()
-def diagnostics(args, images, concepts, z, pretrained, cvae, mrf, empirical, device):
+def diagnostics(images, concepts, z, pretrained, cvae, mrf, empirical, device):
     """Everything that has to be true for the figure to mean anything."""
     print("\n-- diagnostics --")
     recon = reconstruct(pretrained.decoder, z[:512], device)
@@ -141,7 +142,6 @@ def diagnostics(args, images, concepts, z, pretrained, cvae, mrf, empirical, dev
           f"{(learned - empirical).abs().max():.2e}")
 
     # BP must agree with exact enumeration -- on this graph it should be exact.
-    from torch_concepts.nn import BeliefPropagation
     bp = BeliefPropagation(mrf, iters=20)
     worst = 0.0
     for value in range(CARDS['color']):
@@ -157,7 +157,7 @@ def diagnostics(args, images, concepts, z, pretrained, cvae, mrf, empirical, dev
 
 
 @torch.no_grad()
-def report_steering(images, z_tilde, c_tilde, pretrained, device):
+def report_steering(z_tilde, c_tilde, pretrained, device):
     """Did the decoded image actually take the intended colour?
 
     ``colorize`` puts all the intensity in one RGB channel, so the brighter of
@@ -179,7 +179,7 @@ def main(argv=None):
     (images, digits, color, concepts, z,
      pretrained, cvae, mrf, ddpm, empirical) = build(args, device)
 
-    diagnostics(args, images, concepts, z, pretrained, cvae, mrf, empirical, device)
+    diagnostics(images, concepts, z, pretrained, cvae, mrf, empirical, device)
 
     columns = torch.arange(args.columns)
     propagate = make_propagator(mrf, CARDS)
@@ -197,7 +197,7 @@ def main(argv=None):
         resample=args.resample,
         path=path,
     )
-    report_steering(images[columns], z_tilde, c_tilde, pretrained, device)
+    report_steering(z_tilde, c_tilde, pretrained, device)
     print(f"wrote {path}")
 
 
