@@ -168,11 +168,19 @@ REPEATS = 5
 EPS = 1e-6
 
 FIGDIR = Path(__file__).parent / "figures"
+#: Models that are actually trained.
 MODEL_ORDER = ("CBM", "GraphCBM", "ConceptMRF")
+#: Eval-time ablation of ``ConceptMRF``: same weights, unary energies switched
+#: off, so only the clique potentials speak. Added after training.
+ABLATION = "MRF (cliques only)"
+PLOT_ORDER = (*MODEL_ORDER, ABLATION)
+#: Row-label column width for the printed tables (the ablation has the longest name).
+LABEL_W = max(len(t) for t in (*PLOT_ORDER, "majority class", "concepts only"))
 MODEL_STYLE = {
     "CBM": dict(color="#888888", marker="o", ls="--"),
     "GraphCBM": dict(color="#1f77b4", marker="s", ls="-."),
     "ConceptMRF": dict(color="#d62728", marker="^", ls="-"),
+    ABLATION: dict(color="#2ca02c", marker="v", ls=":"),
 }
 
 
@@ -276,6 +284,10 @@ class UnaryEnergy(nn.Module):
     def __init__(self, width: int, latent_size: int):
         super().__init__()
         self.width = width
+        #: Set to 0.0 to switch this potential off, leaving a uniform factor that
+        #: carries no information. Used by :class:`CliquesOnlyMRF` at eval time —
+        #: a plain float, so it costs nothing and needs no device handling.
+        self.scale = 1.0
         self.head = nn.Sequential(
             nn.Linear(latent_size, width),
             nn.LeakyReLU(),
@@ -284,7 +296,7 @@ class UnaryEnergy(nn.Module):
 
     def forward(self, u: torch.Tensor) -> torch.Tensor:
         c, z = u[..., : self.width], u[..., self.width :]
-        return -(self.head(z) * c).sum(-1)
+        return -self.scale * (self.head(z) * c).sum(-1)
 
 
 class CliqueEnergy(nn.Module):
@@ -407,6 +419,42 @@ class ConceptMRF(nn.Module):
 
     def forward_eval(self, x, clamped):
         return self.probs(x, clamped)
+
+
+class CliquesOnlyMRF(nn.Module):
+    """The *trained* :class:`ConceptMRF` with its unary energies multiplied by 0.
+
+    An ablation, not a fourth trained model: it shares every parameter with
+    ``ConceptMRF`` and is never optimised. With the unaries off, each unary
+    factor's table is uniform and carries no information, so belief propagation
+    is left with the clique potentials alone. The resulting curve is what the
+    concept-concept structure contributes **on its own**, with ``x`` cut out
+    entirely — at ``p = 0`` that is the learned marginal over each concept, and
+    at ``p = 1`` it is what the neighbours alone determine.
+    """
+
+    def __init__(self, mrf_model: "ConceptMRF"):
+        super().__init__()
+        self.mrf_model = mrf_model
+        self.unaries = [
+            f.parametrization["energy"]
+            for f in mrf_model.mrf.factors.values()
+            if isinstance(f.parametrization["energy"], UnaryEnergy)
+        ]
+
+    def forward_eval(self, x, clamped):
+        for u in self.unaries:
+            u.scale = 0.0
+        try:
+            return self.mrf_model.forward_eval(x, clamped)
+        finally:
+            # Restored even if BP raises: the trained model is shared, and
+            # leaving its unaries off would silently corrupt every later read.
+            for u in self.unaries:
+                u.scale = 1.0
+
+    def forward_train(self, x, gt):
+        raise RuntimeError("CliquesOnlyMRF is an eval-time ablation; it is not trained.")
 
 
 class LibraryModel(nn.Module):
@@ -693,11 +741,7 @@ def make_figure(name, labels, curves, p_grid, unaided, ceiling, prior):
     axes = [axes] if n == 1 else list(axes)
 
     for ax, concept in zip(axes, labels):
-        ax.axhline(ceiling[concept], color="k", ls=":", lw=1.0, zorder=0,
-                   label="concepts only" if concept == labels[0] else None)
-        ax.axhline(prior[concept], color="k", ls=":", lw=0.8, alpha=0.35, zorder=0,
-                   label="majority class" if concept == labels[0] else None)
-        for tag in MODEL_ORDER:
+        for tag in PLOT_ORDER:
             ax.plot(p_grid, curves[tag][concept], label=tag, markersize=4,
                     linewidth=1.6, **MODEL_STYLE[tag])
         title = concept + (" (task)" if concept in TASKS[name] else "")
@@ -738,23 +782,31 @@ def run(name, epochs, repeats):
     for tag in MODEL_ORDER:
         train_model(tag, models[tag], dm, labels, width, epochs, LR)
 
+    # Shares the trained MRF's weights — an ablation, so it is added after
+    # training and never optimised.
+    models[ABLATION] = CliquesOnlyMRF(models["ConceptMRF"]).to(DEVICE)
+
     print(f"\nunaided per-concept accuracy (no intervention), {name}:")
     header = "  ".join(f"{n:>10s}" for n in labels)
-    print(f"{'':>12s}  {header}")
+    print(f"{'':>{LABEL_W}s}  {header}")
     unaided = {}
-    for tag in MODEL_ORDER:
+    for tag in PLOT_ORDER:
         acc = mean_accuracy(models[tag], dm.test_dataloader(), labels, width)
         unaided[tag] = acc.tolist()
-        print(f"{tag:>12s}  " + "  ".join(f"{a:10.3f}" for a in acc.tolist())
+        print(f"{tag:>{LABEL_W}s}  " + "  ".join(f"{a:10.3f}" for a in acc.tolist())
               + f"   | mean {float(acc.mean()):.3f}")
 
     X = torch.cat([b["inputs"]["x"] for b in dm.test_dataloader()]).to(DEVICE)
     C = torch.cat([as_t(b["concepts"]["c"]) for b in dm.test_dataloader()]).to(DEVICE)
     C_train = torch.cat([as_t(b["concepts"]["c"]) for b in dm.train_dataloader()]).cpu()
     ceiling, prior = graph_only_reference(C_train, C.cpu(), labels)
+    # Cross-check on the ablation line, which should reproduce both of these:
+    # with the unaries off and nothing clamped it predicts each concept's learned
+    # marginal, so p=0 lands on `majority class`; with every neighbour clamped it
+    # is a concepts-only predictor, so p=1 lands near `concepts only`.
     print(f"\nreference accuracies, {name}:")
-    print(f"{'majority class':>14s}  " + "  ".join(f"{prior[n]:10.3f}" for n in labels))
-    print(f"{'concepts only':>14s}  " + "  ".join(f"{ceiling[n]:10.3f}" for n in labels))
+    print(f"{'majority class':>{LABEL_W}s}  " + "  ".join(f"{prior[n]:10.3f}" for n in labels))
+    print(f"{'concepts only':>{LABEL_W}s}  " + "  ".join(f"{ceiling[n]:10.3f}" for n in labels))
     for m in models.values():
         m.eval()
 
@@ -763,8 +815,8 @@ def run(name, epochs, repeats):
     print(f"\nintervention sweep: {time.time() - t0:.1f}s over {X.shape[0]} test samples")
 
     print(f"\nat p = 1.0 (every other concept known):")
-    for tag in MODEL_ORDER:
-        print(f"{tag:>14s}  " + "  ".join(f"{curves[tag][n][-1]:10.3f}" for n in labels))
+    for tag in PLOT_ORDER:
+        print(f"{tag:>{LABEL_W}s}  " + "  ".join(f"{curves[tag][n][-1]:10.3f}" for n in labels))
 
     make_figure(name, labels, curves, P_GRID, unaided, ceiling, prior)
     return curves
