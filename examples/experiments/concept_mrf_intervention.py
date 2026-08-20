@@ -149,7 +149,7 @@ BATCH = 256
 #: member, where ``grid`` is the clique's full state count. Evaluation runs at a
 #: smaller batch than training because the leave-one-out sweep pushes the whole
 #: test split through many different evidence sets.
-EVAL_BATCH = 512
+EVAL_BATCH = 8192
 
 HIDDEN, LATENT, N_LAYERS = 64, 32, 2
 #: Hidden width of each clique potential's energy MLP. This is where the
@@ -157,7 +157,7 @@ HIDDEN, LATENT, N_LAYERS = 64, 32, 2
 #: members with `prod(states)` joint configurations is being approximated by
 #: this one hidden layer.
 CLIQUE_HIDDEN = 64
-EPOCHS, LR = 100, 1e-3
+EPOCHS, LR = 2000, 1e-3
 
 #: Hidden width of each autoregressive concept head. The paper uses 20 on
 #: MIMIC-III and 50 on CUB; 32 matches the scale of everything else here.
@@ -388,9 +388,20 @@ class ConceptMRF(nn.Module):
     pass through the message loop.
     """
 
-    def __init__(self, input_size, labels, width, cliques):
+    def __init__(self, input_size, labels, width, cliques, unary_on=None):
+        """``unary_on`` names the concepts that get a unary energy from ``x``.
+
+        Defaults to every concept, which is right when the input is generated
+        from all of them (the bnlearn setting: ``x`` is an autoencoding of the
+        whole concept vector). Pass a subset when the graph says only some
+        concepts are *directly* observed — a unary is an ``x -> c`` edge, so
+        giving one to a concept the graph reaches only through its parents adds
+        an edge the graph does not contain, and quietly hands the model a route
+        the structure was supposed to forbid.
+        """
         super().__init__()
         self.labels = list(labels)
+        self.unary_on = list(labels if unary_on is None else unary_on)
         self.trunk = MLP(input_size=input_size, hidden_size=HIDDEN,
                          output_size=LATENT, n_layers=N_LAYERS)
 
@@ -410,7 +421,7 @@ class ConceptMRF(nn.Module):
                 parametrization=UnaryEnergy(width[n], LATENT),
                 name=f"u_{n}",
             )
-            for n in self.labels
+            for n in self.unary_on
         ]
         factors += [
             ParametricPotential(
@@ -513,11 +524,21 @@ class AutoregressiveCBM(nn.Module):
         history subsumes any DAG either way.)
     """
 
-    def __init__(self, input_size, labels, width, order):
+    def __init__(self, input_size, labels, width, order, latent_on=None):
+        """``latent_on`` names the concepts whose head may read ``x``.
+
+        Defaults to every concept. Pass the graph's roots when the structure
+        says ``x`` informs only some of them: a head that reads the latent is an
+        ``x -> c`` edge, so leaving it on for a concept the graph reaches only
+        through its parents smuggles in an edge the graph does not have. A
+        non-root always has at least one parent earlier in a topological order,
+        so its head is never left with zero inputs.
+        """
         super().__init__()
         self.labels = list(labels)
         self.order = list(order)
         self.width = dict(width)
+        self.latent_on = set(labels if latent_on is None else latent_on)
         self.trunk = MLP(input_size=input_size, hidden_size=HIDDEN,
                          output_size=LATENT, n_layers=N_LAYERS)
         #: Mean effective sample size of the last `forward_eval`, out of
@@ -529,7 +550,8 @@ class AutoregressiveCBM(nn.Module):
         self.heads = nn.ModuleDict()
         history = 0
         for n in self.order:
-            self.heads[n] = MLP(input_size=LATENT + history, hidden_size=AR_HIDDEN,
+            n_in = (LATENT if n in self.latent_on else 0) + history
+            self.heads[n] = MLP(input_size=n_in, hidden_size=AR_HIDDEN,
                                 output_size=self.width[n], n_layers=1)
             history += self.width[n]
 
@@ -564,7 +586,8 @@ class AutoregressiveCBM(nn.Module):
         z = self.trunk(x)
         history, out = [], {}
         for n in self.order:
-            logits = self.heads[n](torch.cat([z, *history], dim=-1))
+            head_in = ([z] if n in self.latent_on else []) + history
+            logits = self.heads[n](torch.cat(head_in, dim=-1))
             out[n] = self._to_probs(logits, n)
             history.append(gt[n])
         return out
@@ -590,7 +613,8 @@ class AutoregressiveCBM(nn.Module):
         logw = torch.zeros(M * B, dtype=zr.dtype, device=zr.device)
         history, samples = [], {}
         for n in self.order:
-            logits = self.heads[n](torch.cat([zr, *history], dim=-1))
+            head_in = ([zr] if n in self.latent_on else []) + history
+            logits = self.heads[n](torch.cat(head_in, dim=-1))
             if n in clamped:
                 v = clamped[n].unsqueeze(0).expand(M, B, -1).reshape(M * B, -1)
                 logw = logw + self._log_prob(logits, v, n)
@@ -638,7 +662,7 @@ class LibraryModel(nn.Module):
         return self._probs(out, free)
 
 
-def build_models(name, dm, labels, width, states, cliques):
+def build_models(name, dm, labels, width, states, cliques, x_observes=None):
     """The four trained models, all with the same backbone shape and latent width."""
     input_size = int(dm.n_features[0]) if hasattr(dm.n_features, "__len__") else int(dm.n_features)
     common = dict(
@@ -679,10 +703,13 @@ def build_models(name, dm, labels, width, states, cliques):
         plate=False, **common,
     )
     graph_cbm = GraphConceptBottleneckModel(graph=dm.graph, backbone=backbone(), **common)
-    mrf = ConceptMRF(input_size, labels, width, cliques)
+    # One switch for both structure-aware models, so they cannot disagree about
+    # which concepts the graph says `x` observes.
+    mrf = ConceptMRF(input_size, labels, width, cliques, unary_on=x_observes)
     # Topological order: every concept's true parents precede it, so the AR
     # model is handed the same structure GraphCBM and the MRF get.
-    ar = AutoregressiveCBM(input_size, labels, width, dm.graph.topological_sort())
+    ar = AutoregressiveCBM(input_size, labels, width, dm.graph.topological_sort(),
+                           latent_on=x_observes)
 
     return {
         "CBM": LibraryModel(cbm, labels, width).to(DEVICE),
