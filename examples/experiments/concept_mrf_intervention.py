@@ -24,11 +24,26 @@ probability that the *other* concepts are swapped to their ground-truth values
                   is flat. Only the task node rises.
 * ``GraphCBM``  — a node is predicted from its DAG parents, so root nodes stay
                   flat and downstream nodes rise. Information flows one way.
+* ``AR CBM``    — the autoregressive concept predictor of Havasi et al. (NeurIPS
+                  2022, §4.2), ``p(c_k | x, c_1..c_{k-1})``, with their
+                  importance-sampling intervention scheme (Eq 8-9). Its weights
+                  update concepts *earlier* in the order too, so it rises
+                  everywhere. The baseline actually worth beating.
 * ``ConceptMRF``— belief propagation moves evidence in *every* direction, so
                   every node with a neighbour rises, roots included.
+* ``MRF (cliques only)`` — the trained MRF with its unary energies zeroed: what
+                  the concept structure contributes with ``x`` removed.
 
-That contrast is the point of the experiment: modelling concept-concept
-relations lets a concept's belief be informed by its neighbours'.
+The contrast the experiment is built on: clamping a concept and re-running is
+**do**-semantics for the first two models — descendants update, ancestors never
+do — while ``AR CBM`` and ``ConceptMRF`` both perform real conditioning. They
+differ in how: reweighted samples versus exact message passing, which is why the
+AR effective sample size is reported alongside the curves.
+
+The two directed baselines use straight-through (hard) concept samples. With the
+plain ``Bernoulli``/``OneHotCategorical`` default they would propagate *soft*
+Concrete values, making them soft CBMs in the paper's sense and confounding
+"autoregressive" with "hard".
 
 Runtime
 -------
@@ -49,6 +64,7 @@ Usage
     python examples/experiments/concept_mrf_intervention.py                  # all three
     python examples/experiments/concept_mrf_intervention.py --datasets asia
     python examples/experiments/concept_mrf_intervention.py --device cuda --eval-batch 4096
+    python examples/experiments/concept_mrf_intervention.py --ar-samples 50   # faster sweep
     python examples/experiments/concept_mrf_intervention.py --epochs 5 --repeats 1  # smoke test
 """
 
@@ -69,6 +85,10 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Bernoulli, Normal, OneHotCategorical
+from pyro.distributions import (
+    RelaxedBernoulliStraightThrough,
+    RelaxedOneHotCategoricalStraightThrough,
+)
 
 from torch_concepts import seed_everything, ConceptVariable, EmbeddingVariable
 from torch_concepts.data import BnLearnDataModule
@@ -139,6 +159,15 @@ HIDDEN, LATENT, N_LAYERS = 64, 32, 2
 CLIQUE_HIDDEN = 64
 EPOCHS, LR = 100, 1e-3
 
+#: Hidden width of each autoregressive concept head. The paper uses 20 on
+#: MIMIC-III and 50 on CUB; 32 matches the scale of everything else here.
+AR_HIDDEN = 32
+#: Monte-Carlo samples for the autoregressive model's intervention estimator
+#: (Havasi et al. Eq 8-9). The paper uses M = 200. Lower it with
+#: ``--ar-samples`` if the sweep is too slow; the printed effective sample size
+#: is what says whether the budget is actually the binding constraint.
+AR_SAMPLES = 200
+
 #: The MRF's counterpart of the baselines' ``p_int=1`` teacher forcing. The
 #: directed models are trained with their parents clamped to ground truth, which
 #: is exactly what makes them responsive to interventions at test time. BP has no
@@ -169,7 +198,7 @@ EPS = 1e-6
 
 FIGDIR = Path(__file__).parent / "figures"
 #: Models that are actually trained.
-MODEL_ORDER = ("CBM", "GraphCBM", "ConceptMRF")
+MODEL_ORDER = ("CBM", "GraphCBM", "AR CBM", "ConceptMRF")
 #: Eval-time ablation of ``ConceptMRF``: same weights, unary energies switched
 #: off, so only the clique potentials speak. Added after training.
 ABLATION = "MRF (cliques only)"
@@ -179,6 +208,7 @@ LABEL_W = max(len(t) for t in (*PLOT_ORDER, "majority class", "concepts only"))
 MODEL_STYLE = {
     "CBM": dict(color="#888888", marker="o", ls="--"),
     "GraphCBM": dict(color="#1f77b4", marker="s", ls="-."),
+    "AR CBM": dict(color="#9467bd", marker="D", ls="-"),
     "ConceptMRF": dict(color="#d62728", marker="^", ls="-"),
     ABLATION: dict(color="#2ca02c", marker="v", ls=":"),
 }
@@ -246,6 +276,7 @@ def report_structure(name, dm, labels, states, cliques):
     print(f"moral-graph maximal cliques ({len(cliques)}, {total} enumerated states total):")
     for c in cliques:
         print(f"    {math.prod(states[n] for n in c):5d} states  {c}")
+    print(f"AR order : {' -> '.join(dm.graph.topological_sort())}")
 
 
 def gt_event(c: torch.Tensor, labels, width) -> Dict[str, torch.Tensor]:
@@ -457,6 +488,124 @@ class CliquesOnlyMRF(nn.Module):
         raise RuntimeError("CliquesOnlyMRF is an eval-time ablation; it is not trained.")
 
 
+class AutoregressiveCBM(nn.Module):
+    """Hard autoregressive concept predictor (Havasi et al., NeurIPS 2022, §4.2).
+
+    Concept ``k`` is predicted from the input *and* every earlier concept,
+    ``p(c_k | x, c_1..c_{k-1})``, so unlike a plain CBM the predictor can express
+    correlations between concepts (mutual exclusivity, implication) rather than
+    treating them as conditionally independent given ``x``.
+
+    The reason this is the baseline worth beating: its intervention scheme
+    (Eq 8-9) updates the beliefs of concepts *earlier* in the order, not just
+    later ones. `CBM` and `GraphCBM` can only push a clamped value forward to
+    descendants, which is do-semantics; this model and `ConceptMRF` both do real
+    conditioning. The difference is how — reweighted samples here, exact message
+    passing there.
+
+    Parameters
+    ----------
+    order : list of str
+        Prediction order. Given the DAG's topological order, every concept's
+        true parents precede it, so the model has access to the same structural
+        information `GraphCBM` and `ConceptMRF` get. (The published model is
+        graph-free and uses an arbitrary order; conditioning on the whole
+        history subsumes any DAG either way.)
+    """
+
+    def __init__(self, input_size, labels, width, order):
+        super().__init__()
+        self.labels = list(labels)
+        self.order = list(order)
+        self.width = dict(width)
+        self.trunk = MLP(input_size=input_size, hidden_size=HIDDEN,
+                         output_size=LATENT, n_layers=N_LAYERS)
+        #: Mean effective sample size of the last `forward_eval`, out of
+        #: AR_SAMPLES. Read by the ESS diagnostic; see `ar_ess_report`.
+        self.last_ess = float("nan")
+
+        # One head per concept over [latent, history]. `MLP(..., n_layers=1)` is
+        # Linear -> ReLU -> Linear, the paper's "small, two-layer network".
+        self.heads = nn.ModuleDict()
+        history = 0
+        for n in self.order:
+            self.heads[n] = MLP(input_size=LATENT + history, hidden_size=AR_HIDDEN,
+                                output_size=self.width[n], n_layers=1)
+            history += self.width[n]
+
+    # -- per-concept parametrisation: width 1 is a Bernoulli logit, width K a
+    #    categorical logit vector. Same convention as `gt_event`, so the history
+    #    a head consumes has exactly the layout the clamps and targets use.
+    def _to_probs(self, logits, n):
+        return (torch.sigmoid(logits) if self.width[n] == 1
+                else torch.softmax(logits, dim=-1))
+
+    def _log_prob(self, logits, value, n):
+        """``log p(value | ...)`` per row, shape ``(rows,)``."""
+        if self.width[n] == 1:
+            return -F.binary_cross_entropy_with_logits(
+                logits, value, reduction="none").squeeze(-1)
+        return (F.log_softmax(logits, dim=-1) * value).sum(-1)
+
+    def _sample(self, logits, n):
+        """An **exact** discrete draw — no Concrete relaxation anywhere."""
+        if self.width[n] == 1:
+            return torch.bernoulli(torch.sigmoid(logits))
+        idx = torch.distributions.Categorical(logits=logits).sample()
+        return F.one_hot(idx, self.width[n]).to(logits.dtype)
+
+    def forward_train(self, x, gt):
+        """Teacher-forced likelihood ``log p(c|x) = sum_k log p(c_k | x, c_1:k-1)``.
+
+        The history is ground truth, which is the direct analogue of the
+        baselines' ``p_int=1``: every model here is trained with its conditioning
+        set to the true concept values.
+        """
+        z = self.trunk(x)
+        history, out = [], {}
+        for n in self.order:
+            logits = self.heads[n](torch.cat([z, *history], dim=-1))
+            out[n] = self._to_probs(logits, n)
+            history.append(gt[n])
+        return out
+
+    @torch.no_grad()
+    def forward_eval(self, x, clamped):
+        """Normalised importance sampling under interventions (Eq 8-9).
+
+        The proposal forces every clamped concept to its ground-truth value and
+        samples the rest from the model, so ``q`` differs from ``p`` exactly by
+        the clamped conditionals — hence ``w_m = prod_{k in I} p(chat_k | x,
+        c_1:k-1)``. Because a clamped concept late in the order contributes a
+        weight that *depends on the earlier sampled values*, reweighting shifts
+        the posterior over those earlier concepts. That backward update is the
+        whole point of the scheme.
+
+        Samples and batch share one leading axis, so the only Python loop is
+        over concepts. Returns a weighted empirical distribution per free
+        concept — width 1 holds ``P(c=1)``, width K holds K probabilities.
+        """
+        M, B = AR_SAMPLES, x.shape[0]
+        zr = self.trunk(x).unsqueeze(0).expand(M, B, -1).reshape(M * B, -1)
+        logw = torch.zeros(M * B, dtype=zr.dtype, device=zr.device)
+        history, samples = [], {}
+        for n in self.order:
+            logits = self.heads[n](torch.cat([zr, *history], dim=-1))
+            if n in clamped:
+                v = clamped[n].unsqueeze(0).expand(M, B, -1).reshape(M * B, -1)
+                logw = logw + self._log_prob(logits, v, n)
+            else:
+                v = self._sample(logits, n)
+                samples[n] = v
+            history.append(v)
+
+        # softmax over the sample axis IS w_m / sum_m w_m, done in log space.
+        w = torch.softmax(logw.view(M, B), dim=0)
+        self.last_ess = float((1.0 / (w ** 2).sum(0)).mean())
+        return {n: (w.unsqueeze(-1) * s.view(M, B, -1)).sum(0)
+                for n, s in samples.items()}
+
+
 class LibraryModel(nn.Module):
     """Adapter giving CBM / GraphCBM the same two-method interface as ConceptMRF."""
 
@@ -490,12 +639,23 @@ class LibraryModel(nn.Module):
 
 
 def build_models(name, dm, labels, width, states, cliques):
-    """The three models, all with the same backbone shape and latent width."""
+    """The four trained models, all with the same backbone shape and latent width."""
     input_size = int(dm.n_features[0]) if hasattr(dm.n_features, "__len__") else int(dm.n_features)
     common = dict(
         input_size=input_size,
         annotations=dm.annotations,
         latent_size=LATENT,
+        # HARD concepts. The plain `Bernoulli` / `OneHotCategorical` default is
+        # sampled through `RelaxedBernoulli` at temperature 1.0, i.e. a *soft*
+        # CBM in the sense of Havasi et al. — the concept values propagated
+        # downstream are continuous and can carry information the concept
+        # labels do not (leakage). The straight-through families draw an exact
+        # bit / one-hot with a soft gradient, so the only thing separating
+        # these baselines from `AR CBM` is the autoregressive structure.
+        variable_distributions={
+            "binary": RelaxedBernoulliStraightThrough,
+            "categorical": RelaxedOneHotCategoricalStraightThrough,
+        },
         # Ancestral sampling both ways: p_int=1 in training, so every concept
         # propagates its ground-truth value to its children (teacher forcing);
         # p_int=0 at test time, so the model runs unaided and any lift in the
@@ -520,10 +680,14 @@ def build_models(name, dm, labels, width, states, cliques):
     )
     graph_cbm = GraphConceptBottleneckModel(graph=dm.graph, backbone=backbone(), **common)
     mrf = ConceptMRF(input_size, labels, width, cliques)
+    # Topological order: every concept's true parents precede it, so the AR
+    # model is handed the same structure GraphCBM and the MRF get.
+    ar = AutoregressiveCBM(input_size, labels, width, dm.graph.topological_sort())
 
     return {
         "CBM": LibraryModel(cbm, labels, width).to(DEVICE),
         "GraphCBM": LibraryModel(graph_cbm, labels, width).to(DEVICE),
+        "AR CBM": ar.to(DEVICE),
         "ConceptMRF": mrf.to(DEVICE),
     }
 
@@ -692,6 +856,34 @@ def intervention_curves(models, X, C, labels, width, p_grid, repeats):
     }
 
 
+@torch.no_grad()
+def ar_ess_report(model, X, C, labels, width, p_grid, seed=SEED):
+    """Effective sample size of the AR model's importance weights, per ``p``.
+
+    The weight of a sample is a product over the *clamped* concepts, so as more
+    of them are clamped the weights concentrate on fewer samples and the
+    estimator degrades. ESS (out of ``AR_SAMPLES``) is what separates "the
+    autoregressive model genuinely cannot do this" from "``M`` was too small",
+    and without it a sagging AR curve is unreadable.
+
+    Note the two ends behave differently: at ``p = 0`` nothing is clamped, every
+    weight is equal and ESS is exactly ``M``; at ``p = 1`` only the scored
+    concept varies across samples, so there are just ``states(j)`` distinct
+    weights and ESS stays high. The squeeze is in the middle.
+    """
+    rng = torch.Generator().manual_seed(seed)
+    x, gt = X[:EVAL_BATCH], gt_event(C[:EVAL_BATCH], labels, width)
+    out = []
+    for p in p_grid:
+        draw = torch.rand(len(labels), generator=rng) < p
+        # Leave-one-out, matching the sweep: the first concept is never clamped.
+        clamped = {n: gt[n] for n, k in zip(labels, draw.tolist())
+                   if k and n != labels[0]}
+        model.forward_eval(x, clamped)
+        out.append((p, len(clamped), model.last_ess))
+    return out
+
+
 def graph_only_reference(C_train, C_test, labels):
     """Accuracy of predicting each concept from the exact values of all others.
 
@@ -814,6 +1006,12 @@ def run(name, epochs, repeats):
     curves = intervention_curves(models, X, C, labels, width, P_GRID, repeats)
     print(f"\nintervention sweep: {time.time() - t0:.1f}s over {X.shape[0]} test samples")
 
+    ess = ar_ess_report(models["AR CBM"], X, C, labels, width, P_GRID)
+    print(f"\nAR importance-weight effective sample size (out of {AR_SAMPLES}):")
+    print("           p  " + "  ".join(f"{p:6.1f}" for p, _, _ in ess))
+    print("     clamped  " + "  ".join(f"{k:6d}" for _, k, _ in ess))
+    print("         ESS  " + "  ".join(f"{e:6.1f}" for _, _, e in ess))
+
     print(f"\nat p = 1.0 (every other concept known):")
     for tag in PLOT_ORDER:
         print(f"{tag:>{LABEL_W}s}  " + "  ".join(f"{curves[tag][n][-1]:10.3f}" for n in labels))
@@ -825,7 +1023,7 @@ def run(name, epochs, repeats):
 def main():
     # Declared up front: Python rejects a `global` that follows any use of the
     # name in the same scope, and the defaults below read these.
-    global DEVICE, BATCH, EVAL_BATCH
+    global DEVICE, BATCH, EVAL_BATCH, AR_SAMPLES
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--datasets", nargs="+", default=list(DATASETS), choices=DATASETS)
     parser.add_argument("--epochs", type=int, default=EPOCHS)
@@ -836,11 +1034,14 @@ def main():
     parser.add_argument("--eval-batch", type=int, default=EVAL_BATCH,
                         help="inference batch size for the intervention sweep; "
                              "raise it on a GPU, lower it if a large clique runs out of memory")
+    parser.add_argument("--ar-samples", type=int, default=AR_SAMPLES,
+                        help="Monte-Carlo samples for the autoregressive model's "
+                             "intervention estimator (paper: 200)")
     args = parser.parse_args()
 
     if args.device:
         DEVICE = torch.device(args.device)
-    BATCH, EVAL_BATCH = args.batch, args.eval_batch
+    BATCH, EVAL_BATCH, AR_SAMPLES = args.batch, args.eval_batch, args.ar_samples
 
     seed_everything(SEED)
     print(f"device: {DEVICE} | train batch {BATCH} | eval batch {EVAL_BATCH}")
