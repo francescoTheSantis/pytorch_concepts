@@ -132,6 +132,15 @@ D_DIGIT, D_COLOR = 16, 4
 #: ceilings at run time, since they are what the whole design turns on.
 SIGMA_DIGIT, SIGMA_COLOR = 2.2, 0.25
 
+#: ``P(parity != digit % 2)``. With parity a *deterministic* function of digit,
+#: clamping the digit leaves colour nothing to add and "learn to ignore colour"
+#: is trivially easy — which is exactly why the first version of this experiment
+#: could not separate the autoregressive model from the graph-based ones. At
+#: 0.2 the digit caps parity at 0.80 while colour is worth 0.90 in training, so
+#: colour stays informative *even when the digit is known* and a model free to
+#: read it has a standing incentive to.
+PARITY_FLIP = 0.2
+
 #: ``P(color | parity)``, rows indexed by the parity value (0 = odd, 1 = even),
 #: columns by `COLOR_NAMES`. Training pins red to even; the test population
 #: swaps that onto green, so the correlation does not merely vanish, it inverts.
@@ -173,13 +182,17 @@ def signal_ceilings(n=20000, seed=SEED):
     proto = prototypes(seed)
     g = torch.Generator().manual_seed(seed + 99)
     digit = torch.randint(N_DIGITS, (n,), generator=g)
+    flip = (torch.rand(n, generator=g) < PARITY_FLIP).long()
+    parity = ((digit % 2 == 0).long() + flip) % 2
     xd = proto["digit"][digit] + SIGMA_DIGIT * torch.randn(n, D_DIGIT, generator=g)
     hat_d = torch.cdist(xd, proto["digit"]).argmin(1)
     color = torch.randint(N_COLORS, (n,), generator=g)
     xc = proto["color"][color] + SIGMA_COLOR * torch.randn(n, D_COLOR, generator=g)
     hat_c = torch.cdist(xc, proto["color"]).argmin(1)
+    # Best parity guess from the digit block alone: decode the digit, then
+    # answer with that digit's majority parity.
     return (float((hat_d == digit).float().mean()),
-            float(((hat_d % 2) == (digit % 2)).float().mean()),
+            float((((hat_d % 2 == 0).long()) == parity).float().mean()),
             float((hat_c == color).float().mean()))
 
 
@@ -189,7 +202,14 @@ class ToyShortcutDataset(ConceptDataset):
     def __init__(self, n_samples, bias, seed, proto):
         g = torch.Generator().manual_seed(seed)
         digit = torch.randint(N_DIGITS, (n_samples,), generator=g)
-        parity = (digit % 2 == 0).long()
+        # Parity is a *stochastic* function of the digit: the label agrees with
+        # `digit % 2` only `1 - PARITY_FLIP` of the time. The graph edge
+        # `digit -> parity` is still exactly right; it is just no longer
+        # deterministic, which is what keeps colour informative given the digit.
+        flip = (torch.rand(n_samples, generator=g) < PARITY_FLIP).long()
+        parity = ((digit % 2 == 0).long() + flip) % 2
+        # Colour is drawn from the *realised* parity, so the 0.90 bias holds
+        # against the label a model is scored on.
         color = torch.multinomial(bias[parity], 1, replacement=True,
                                   generator=g).squeeze(-1)
 
@@ -267,7 +287,8 @@ def leak_probe(n=8000, seed=SEED):
     def pop(bias, s):
         g = torch.Generator().manual_seed(s)
         d = torch.randint(N_DIGITS, (n,), generator=g)
-        par = (d % 2 == 0).long()
+        flip = (torch.rand(n, generator=g) < PARITY_FLIP).long()
+        par = ((d % 2 == 0).long() + flip) % 2
         c = torch.multinomial(bias[par], 1, replacement=True, generator=g).squeeze(-1)
         x = torch.cat([proto["digit"][d] + SIGMA_DIGIT * torch.randn(n, D_DIGIT, generator=g),
                        proto["color"][c] + SIGMA_COLOR * torch.randn(n, D_COLOR, generator=g)], 1)
@@ -379,7 +400,35 @@ def accuracy(model, loader, labels, width, observe=()):
 # ---------------------------------------------------------------------------
 # 3. figure
 # ---------------------------------------------------------------------------
-BLANKETS = {}
+@torch.no_grad()
+def color_swing(models, dm, labels, width):
+    """How far parity moves when only the colour changes, digit held at truth.
+
+    The decisive measurement. The graph says parity is independent of colour
+    given the digit, so with the true digit supplied this swing *should* be
+    zero. For the MRF and GraphCBM it is zero by construction — colour shares no
+    factor (respectively no edge) with parity, so nothing can carry it. For CBM
+    and the autoregressive model colour is wired into the parity predictor, so
+    their swing is whatever training happened to leave behind: a learned
+    approximation of an independence the others get for free.
+    """
+    b = next(iter(dm.test_dataloader()))
+    x = b["inputs"]["x"][:1024].to(M.DEVICE)
+    c = M.as_t(b["concepts"]["c"])[:1024].to(M.DEVICE)
+    gt = M.gt_event(c, labels, width)
+    out = {}
+    for tag in M.MODEL_ORDER:
+        ps = []
+        for k in range(N_COLORS):
+            col = torch.zeros_like(gt["color"])
+            col[:, k] = 1.0
+            probs = models[tag].forward_eval(x, {"digit": gt["digit"], "color": col})
+            ps.append(float(M.as_t(probs["parity"]).mean()))
+        out[tag] = ps
+    return out
+
+
+BLANKETS, SWING = {}, {}
 
 
 def make_figure(labels, results):
@@ -419,6 +468,7 @@ def make_figure(labels, results):
     fig.savefig(path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     torch.save({"labels": labels, "results": results, "blankets": BLANKETS,
+                "color_swing": SWING, "parity_flip": PARITY_FLIP,
                 "train_bias": TRAIN_BIAS, "test_bias": TEST_BIAS},
                path.with_suffix(".pt"))
     print(f"\nsaved {path}\nsaved {path.with_suffix('.pt')}")
@@ -483,7 +533,15 @@ def main():
         print(f"{'':>{M.LABEL_W}s}  {'':>9s}  parity {results[tag]['test'][j] - results[tag]['val'][j]:+.3f} "
               f"under shift | own blanket = {blankets[tag]}\n")
 
-    BLANKETS.update(blankets)
+    swing = color_swing(models, dm, labels, width)
+    print("parity prediction with the TRUE digit clamped, sweeping colour")
+    print("(the graph says this must not move):")
+    print(f"{'':>{M.LABEL_W}s}  " + "  ".join(f"{n:>8s}" for n in COLOR_NAMES) + "     swing")
+    for tag, ps in swing.items():
+        print(f"{tag:>{M.LABEL_W}s}  " + "  ".join(f"{p:8.4f}" for p in ps)
+              + f"   {max(ps) - min(ps):7.4f}")
+
+    BLANKETS.update(blankets); SWING.update(swing)
     make_figure(labels, results)
 
 

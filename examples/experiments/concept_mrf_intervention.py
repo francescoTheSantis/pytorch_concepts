@@ -31,8 +31,11 @@ probability that the *other* concepts are swapped to their ground-truth values
                   everywhere. The baseline actually worth beating.
 * ``ConceptMRF``— belief propagation moves evidence in *every* direction, so
                   every node with a neighbour rises, roots included.
-* ``MRF (cliques only)`` — the trained MRF with its unary energies zeroed: what
-                  the concept structure contributes with ``x`` removed.
+* ``MRF (no x on target)`` — the trained MRF with the *scored* concept's own
+                  unary zeroed, so that concept sees nothing of ``x`` while its
+                  neighbours still do. Reads as: how well is this concept pinned
+                  down by its neighbours alone? The gap to ``ConceptMRF`` is
+                  exactly what the unary adds on top of the graph.
 
 The contrast the experiment is built on: clamping a concept and re-running is
 **do**-semantics for the first two models — descendants update, ancestors never
@@ -199,9 +202,10 @@ EPS = 1e-6
 FIGDIR = Path(__file__).parent / "figures"
 #: Models that are actually trained.
 MODEL_ORDER = ("CBM", "GraphCBM", "AR CBM", "ConceptMRF")
-#: Eval-time ablation of ``ConceptMRF``: same weights, unary energies switched
-#: off, so only the clique potentials speak. Added after training.
-ABLATION = "MRF (cliques only)"
+#: Eval-time ablation of ``ConceptMRF``: same weights, but the unary energy of
+#: the concept being scored is switched off, so that concept sees nothing of
+#: ``x`` while its neighbours still do. Added after training.
+ABLATION = "MRF (no x on target)"
 PLOT_ORDER = (*MODEL_ORDER, ABLATION)
 #: Row-label column width for the printed tables (the ablation has the longest name).
 LABEL_W = max(len(t) for t in (*PLOT_ORDER, "majority class", "concepts only"))
@@ -210,7 +214,7 @@ MODEL_STYLE = {
     "GraphCBM": dict(color="#1f77b4", marker="s", ls="-."),
     "AR CBM": dict(color="#9467bd", marker="D", ls="-"),
     "ConceptMRF": dict(color="#d62728", marker="^", ls="-"),
-    ABLATION: dict(color="#2ca02c", marker="v", ls=":"),
+    ABLATION: dict(color="#2ca02c", marker="v", ls=":"),  # graph-only view of the target
 }
 
 
@@ -497,6 +501,62 @@ class CliquesOnlyMRF(nn.Module):
 
     def forward_train(self, x, gt):
         raise RuntimeError("CliquesOnlyMRF is an eval-time ablation; it is not trained.")
+
+
+class BlindTargetMRF(nn.Module):
+    """The trained :class:`ConceptMRF` with the *scored* concept's own unary at 0.
+
+    An eval-time ablation sharing every parameter with ``ConceptMRF``; never
+    trained. For each concept it reports, that concept's unary energy — and only
+    that one — is multiplied by zero, so its own view of ``x`` is removed while
+    every other concept keeps theirs.
+
+    This is the measurement that isolates the graph. Zeroing *all* unaries
+    answers a much weaker question ("what do the cliques know with ``x`` gone
+    entirely?") and at ``p = 0`` collapses to the learned marginal. Zeroing only
+    the target's leaves the neighbours fully informed by ``x``, so the curve
+    reads as: **how well is this concept determined by its neighbours alone**,
+    with no leakage from ``x`` into the concept itself. The gap to
+    ``ConceptMRF`` is then exactly what the unary adds on top of the graph.
+
+    Cost: one belief-propagation run per reported concept rather than one per
+    call, since a different unary has to be switched off each time. The
+    ``targets`` hint keeps that from being paid for concepts nobody reads.
+    """
+
+    #: Tells `_predict_chunked` this model can be told which concepts are wanted.
+    wants_targets = True
+
+    def __init__(self, mrf_model: "ConceptMRF"):
+        super().__init__()
+        self.mrf_model = mrf_model
+        # Keyed by concept: a unary's scope is [concept, latent], so the concept
+        # comes off the scope rather than off a sliced factor name.
+        self.unaries = {
+            f.scope[0].name: f.parametrization["energy"]
+            for f in mrf_model.mrf.factors.values()
+            if isinstance(f.parametrization["energy"], UnaryEnergy)
+        }
+
+    def forward_eval(self, x, clamped, targets=None):
+        free = [n for n in self.mrf_model.labels if n not in clamped]
+        wanted = free if targets is None else [n for n in targets if n in free]
+        out = {}
+        for name in wanted:
+            u = self.unaries.get(name)      # a concept with no unary: nothing to remove
+            if u is not None:
+                u.scale = 0.0
+            try:
+                out[name] = self.mrf_model.forward_eval(x, clamped)[name]
+            finally:
+                # Restored even if BP raises — the trained model is shared, and
+                # a stuck zero would silently corrupt every later read.
+                if u is not None:
+                    u.scale = 1.0
+        return out
+
+    def forward_train(self, x, gt):
+        raise RuntimeError("BlindTargetMRF is an eval-time ablation; it is not trained.")
 
 
 class AutoregressiveCBM(nn.Module):
@@ -808,13 +868,23 @@ def train_model(tag, model, dm, labels, width, epochs, lr):
 # 4. the intervention sweep
 # ---------------------------------------------------------------------------
 @torch.no_grad()
-def _predict_chunked(model, X, C, clamped_names, labels, width):
-    """Predictions for every free concept, with ``clamped_names`` held at ground truth."""
-    per_name = {n: [] for n in labels if n not in clamped_names}
+def _predict_chunked(model, X, C, clamped_names, labels, width, targets=None):
+    """Predictions for the free concepts, with ``clamped_names`` held at ground truth.
+
+    ``targets`` names the concepts the caller will actually read. Most models
+    produce every free concept in one pass and ignore the hint; one whose cost
+    scales with the number of concepts reported (`BlindTargetMRF`, which needs a
+    separate belief-propagation run per target) declares ``wants_targets`` and
+    is given it.
+    """
+    free = [n for n in labels if n not in clamped_names]
+    wanted = free if targets is None else [n for n in targets if n in free]
+    hint = {"targets": wanted} if getattr(model, "wants_targets", False) else {}
+    per_name = {n: [] for n in wanted}
     for start in range(0, X.shape[0], EVAL_BATCH):
         x = X[start : start + EVAL_BATCH]
         gt = gt_event(C[start : start + EVAL_BATCH], labels, width)
-        probs = model.forward_eval(x, {n: gt[n] for n in clamped_names})
+        probs = model.forward_eval(x, {n: gt[n] for n in clamped_names}, **hint)
         for n in per_name:
             per_name[n].append(predicted_class(probs[n], width[n]))
     return {n: torch.cat(v) for n, v in per_name.items()}
@@ -868,7 +938,8 @@ def intervention_curves(models, X, C, labels, width, p_grid, repeats):
                     # but under a different evidence set than pass 1 gave them —
                     # scoring those too would mix two conditions, so only
                     # `scored` is counted.
-                    pred = _predict_chunked(model, X, C, clamped, labels, width)
+                    pred = _predict_chunked(model, X, C, clamped, labels, width,
+                                            targets=scored)
                     for n in scored:
                         hits[tag][labels.index(n), pi] += pred[n].eq(truth[n]).sum().cpu()
                 # Model-independent: each scored concept saw the whole test split
@@ -1003,7 +1074,7 @@ def run(name, epochs, repeats):
 
     # Shares the trained MRF's weights — an ablation, so it is added after
     # training and never optimised.
-    models[ABLATION] = CliquesOnlyMRF(models["ConceptMRF"]).to(DEVICE)
+    models[ABLATION] = BlindTargetMRF(models["ConceptMRF"]).to(DEVICE)
 
     print(f"\nunaided per-concept accuracy (no intervention), {name}:")
     header = "  ".join(f"{n:>10s}" for n in labels)
