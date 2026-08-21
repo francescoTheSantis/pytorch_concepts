@@ -428,42 +428,52 @@ def color_swing(models, dm, labels, width):
     return out
 
 
+#: The sweep's ablation zeroes the *target's* unary, which is a no-op here —
+#: in this experiment `parity` has no unary to begin with (`unary_on` = roots).
+#: The one that means something is the cliques-only MRF: no unary at all, so no
+#: model reads `x` directly for anything. Hence a local name and a local order.
+ABLATION = "MRF (no x at all)"
+PLOT_ORDER = (*M.MODEL_ORDER, ABLATION)
+
 BLANKETS, SWING = {}, {}
 
 
 def make_figure(labels, results):
+    """One panel, the task only: parity accuracy per model under three regimes.
+
+    ``digit`` and ``color`` are not plotted — they are the bottleneck, and in the
+    third regime they are clamped to truth and so have no score. What the panel
+    asks is the only question the graph can answer: once the encoder is taken out
+    of the way, does this model's parity survive the reversed correlation?
+    """
     FIGDIR.mkdir(parents=True, exist_ok=True)
     path = FIGDIR / "toy_shortcut.png"
     tags = list(results)
-    bars = [("val", "in-distribution", "#4c72b0"),
-            ("test", "shifted", "#c44e52"),
-            ("test_do_digit", "shifted, graph blanket given", "#55a868"),
-            ("test_do_blanket", "shifted, own blanket given", "#8172b2")]
+    j = labels.index("parity")
+    bars = [("val", "train-set", "#4c72b0"),
+            ("test", "test-set", "#c44e52"),
+            ("test_do_bottleneck", "test-set intervened (digit and color)", "#55a868")]
 
-    fig, axes = plt.subplots(1, len(labels), figsize=(4.6 * len(labels), 4.2))
-    axes = [axes] if len(labels) == 1 else list(axes)
+    fig, ax = plt.subplots(1, 1, figsize=(1.35 * len(tags) + 3.2, 4.2))
     xs = list(range(len(tags)))
-    for ax, concept in zip(axes, labels):
-        j = labels.index(concept)
-        for k, (split, caption, color) in enumerate(bars):
-            vals = [results[t][split][j] for t in tags]
-            # `digit` is clamped in the third condition, so it has no score.
-            offs = (k - 1.5) * 0.21
-            ax.bar([v + offs for v in xs], [0 if a != a else a for a in vals],
-                   0.20, label=caption if concept == labels[0] else None, color=color)
-        ax.set_title(concept + (" (task)" if concept == "parity" else ""), fontsize=11)
-        ax.set_xticks(xs)
-        ax.set_xticklabels(tags, rotation=30, ha="right", fontsize=8)
-        ax.set_ylim(0, 1.12)
-        ax.axhline(0.5, color="k", ls=":", lw=0.8, alpha=0.4)
-        ax.grid(axis="y", alpha=0.25, linewidth=0.5)
-    axes[0].set_ylabel("accuracy", fontsize=10)
-    axes[0].legend(fontsize=8, loc="lower left")
+    for k, (split, caption, color) in enumerate(bars):
+        vals = [results[t][split][j] for t in tags]
+        offs = (k - 1) * 0.27
+        ax.bar([v + offs for v in xs], vals, 0.25, label=caption, color=color)
+    ax.set_title("parity (task)", fontsize=11)
+    ax.set_xticks(xs)
+    ax.set_xticklabels(tags, rotation=20, ha="right", fontsize=9)
+    ax.set_ylim(0, 1.12)
+    ax.axhline(0.5, color="k", ls=":", lw=0.8, alpha=0.4)
+    ax.grid(axis="y", alpha=0.25, linewidth=0.5)
+    ax.set_ylabel("accuracy", fontsize=10)
+    ax.legend(fontsize=8, loc="upper center", bbox_to_anchor=(0.5, -0.16),
+              ncol=len(bars), frameon=False)
     fig.suptitle(
         "Spurious colour-parity correlation, reversed at test "
         "(train P(red|even)=0.90 -> test P(green|even)=0.90); the graph has no colour edge.\n"
-        "Green bars remove the encoder from the question: with the true digit supplied, "
-        "only the concept-to-concept channel is left.", fontsize=10)
+        "Green bars remove the encoder from the question: with the whole bottleneck "
+        "supplied, only the concept-to-concept channel is left.", fontsize=10)
     fig.tight_layout()
     fig.savefig(path, dpi=150, bbox_inches="tight")
     plt.close(fig)
@@ -505,13 +515,21 @@ def main():
                             x_observes=graph_roots(dm))
     for tag in M.MODEL_ORDER:
         M.train_model(tag, models[tag], dm, labels, width, args.epochs, LR)
-    models[M.ABLATION] = M.CliquesOnlyMRF(models["ConceptMRF"]).to(M.DEVICE)
+    models[ABLATION] = M.CliquesOnlyMRF(models["ConceptMRF"]).to(M.DEVICE)
+
+    # Every concept in the bottleneck, i.e. everything but the task. Clamping
+    # all of them takes the encoder out of the question completely: whatever is
+    # left in the parity prediction came through the concept-to-concept channel,
+    # which is the only thing the graph governs.
+    bottleneck = tuple(n for n in labels if n != "parity")
 
     results, blankets = {}, {}
-    for tag in M.PLOT_ORDER:
+    for tag in PLOT_ORDER:
         results[tag] = {
             "val": accuracy(models[tag], dm.val_dataloader(), labels, width),
             "test": accuracy(models[tag], dm.test_dataloader(), labels, width),
+            "test_do_bottleneck": accuracy(models[tag], dm.test_dataloader(), labels, width,
+                                           observe=bottleneck),
             "test_do_digit": accuracy(models[tag], dm.test_dataloader(), labels, width,
                                       observe=("digit",)),
             "test_do_blanket": accuracy(models[tag], dm.test_dataloader(), labels, width,
@@ -521,11 +539,12 @@ def main():
 
     head = "  ".join(f"{n:>9s}" for n in labels)
     SPLITS = (("val", "in-distribution"), ("test", "SHIFTED"),
+              ("test_do_bottleneck", f"SHIFTED, whole bottleneck given {list(bottleneck)}"),
               ("test_do_digit", "SHIFTED, graph blanket given {digit}"),
               ("test_do_blanket", "SHIFTED, own blanket given"))
     print(f"\n{'':>{M.LABEL_W}s}  {head}   split")
     j = labels.index("parity")
-    for tag in M.PLOT_ORDER:
+    for tag in PLOT_ORDER:
         for k, (split, caption) in enumerate(SPLITS):
             row = "  ".join("      ---" if a != a else f"{a:9.3f}"
                             for a in results[tag][split])
