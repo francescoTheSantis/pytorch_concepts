@@ -1,5 +1,5 @@
 """
-Abstract class for PGM factors.
+Abstract class for factors.
 """
 
 from __future__ import annotations
@@ -21,10 +21,8 @@ _PYC_PARAM_SETS = [
     {'concepts', 'embeddings'},
 ]
 
-#: Key the shared trunk is registered under in the signature/aggregator maps, so
-#: it reuses the same PyC-vs-standard resolution as the parameter modules. Not a
-#: distribution parameter name — the leading underscores keep it out of any
-#: family's namespace.
+# Key the shared trunk is registered under in the signature/aggregator maps, so
+# it reuses the same PyC-vs-standard resolution as the parameter modules. 
 _TRUNK_KEY = "__trunk__"
 
 
@@ -76,9 +74,8 @@ class ParametricFactor(nn.Module, ABC):
     **Subclass contract.** Before calling ``super().__init__``, a subclass must
     set ``self.inputs``: the ordered list of variables the aggregation machinery
     feeds to the parametrization modules. For a :class:`ParametricCPD` these are
-    the CPD's parents; for a ``ParametricPotential`` they are its ``scope``
-    (an undirected factor has no parents, hence the neutral name). This is the
-    only attribute the base class reads off the subclass.
+    the CPD's parents; for a ``ParametricPotential`` they are its ``scope``. 
+    This is the only attribute the base class reads off the subclass.
 
     Subclasses call ``super().__init__(parametrization, aggregate)`` to store:
 
@@ -166,12 +163,12 @@ class ParametricFactor(nn.Module, ABC):
         parametrization = self._initialize_parametrization(parametrization)
 
         # Cache each module's forward parameter names once at construction time.
-        # The trunk joins the same map under ``_TRUNK_KEY`` so it reuses the
-        # PyC-vs-standard aggregation resolution unchanged.
         self._module_signatures: Dict[str, Set[str]] = {
             pname: _module_input_names(mod)
             for pname, mod in parametrization.items()
         }
+        # The trunk joins the same map under ``_TRUNK_KEY`` so it reuses the
+        # PyC-vs-standard aggregation resolution unchanged.
         if trunk is not None:
             self._module_signatures[_TRUNK_KEY] = _module_input_names(trunk)
 
@@ -212,7 +209,7 @@ class ParametricFactor(nn.Module, ABC):
         """Create a ``nn.ModuleDict`` from the parametrization.
 
         Accepts a plain dict (or an existing ``nn.ModuleDict``) mapping each
-        parameter name to a ready ``nn.Module``. Concrete subclasses resolve any
+        parameter name to an ``nn.Module``. Concrete subclasses resolve any
         :class:`LazyConstructor` entries before calling ``super().__init__`` —
         the input/output sizes a lazy layer needs come from the factor's
         variables, which only the subclass knows (see
@@ -234,13 +231,8 @@ class ParametricFactor(nn.Module, ABC):
         calling convention."""
         return self._module_signatures[pname] in _PYC_PARAM_SETS
 
-    # For entries not covered by the user, pick _pyc_aggregate or
-    # _standard_aggregate based on the cached module signature.
     def _select_default(self, pname: str) -> Callable:
-        """Select the default aggregation for a parameter module.
-        
-        If pyc module return _pyc_aggregate, else return _standard_aggregate.
-        """
+        """Select the default aggregation for a parameter module."""
         return self._pyc_aggregate if self._is_pyc(pname) else self._standard_aggregate
 
     def _resolve_aggregator(

@@ -30,8 +30,7 @@ class ParametricCPD(ParametricFactor):
     variable : Variable or list of Variable
         The child variable this CPD parametrizes. A **list** builds one
         independent CPD per variable, all sharing the same ``parents``, and
-        returns them as a list. A plate (a ``Variable`` with named members) is
-        still a single variable: one CPD produces every member at once.
+        returns them as a list.
     parametrization : nn.Module or dict[str, nn.Module] or list of dict
         Required — no default is inferred. Accepts:
 
@@ -48,11 +47,10 @@ class ParametricCPD(ParametricFactor):
         :class:`LazyConstructor` entry is instantiated here, sized from the
         parents and from ``variable.param_sizes``.
     parents : list of Variable, optional
-        The conditioning set — this *is* the graph structure. Entries may be
-        whole variables or plate-member handles (``plate.member('c1')``), in
-        which case only that member's column is sliced out of the plate's value.
         Empty or omitted makes this a **root** CPD, whose modules are called
-        with no arguments.
+        with no arguments. 
+        Entries may be whole variables or plate-member handles (``plate.member('c1')``), 
+        in which case only that member's column is sliced out of the plate's value.
     aggregate : callable or dict[str, callable], optional
         How parent values are combined into each module's input; see
         :class:`ParametricFactor`. Defaults to concatenating the parents along
@@ -280,20 +278,6 @@ class ParametricCPD(ParametricFactor):
           ``MultivariateNormal``'s ``scale_tril`` module is sized to its
           ``size * (size + 1) // 2`` Cholesky entries, not just ``size``.
 
-        Input parents carry a multi-dimensional ``shape`` (a ``torch.Size``); the
-        sizes above are the flat widths (``Variable.size == math.prod(shape)``),
-        which is what a lazy layer's constructor asks for. Note this is only a
-        sizing convention — the default aggregators do **not** flatten: a parent
-        reaches the module in its full event shape (see ``_cat_parents``).
-
-        The lazy layer may be the parametrization entry itself, or the **first**
-        module of a ``Sequential`` — a continuous variable's scale head is composed
-        with its activation as ``Sequential(LazyConstructor(...), softplus)``, and
-        the layer before the activation is what needs sizing.
-
-        With a ``trunk``, the parameter modules consume the trunk's output rather
-        than the parents, so their input width is the trunk's ``out_features``
-        instead of the summed parent sizes.
         """
         from ...low.lazy import LazyConstructor
 
