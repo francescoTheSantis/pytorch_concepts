@@ -265,18 +265,23 @@ class ParametricFactor(nn.Module, ABC):
     ) -> torch.Tensor:
         """Tensor for input ``v`` from a name-keyed ``values`` mapping.
 
-        Looked up by ``v``'s exact name first (so a caller may key by the member
-        handle directly), then by its owning plate's name, in which case the
-        member's column span is sliced out (a view, no copy). A superset of keys
-        is fine — unrelated entries are ignored.
+        Looked up by ``v``'s exact name first (so a caller may key by the
+        member handle directly), then by its owning plate's name, in which case
+        that member is selected off the member axis (a view, no copy). Either
+        way the result is in event layout, which is what a parametrization
+        module expects. A superset of keys is fine — unrelated entries are
+        ignored.
         """
         value = values.get(v.name)
         if value is not None:
-            return value
+            # Normalise whatever the caller keyed in — a cached member-layout
+            # tensor, or a plain event-shaped one a user passed directly.
+            return v.as_event(value)
         owner = v.plate
         value = values.get(owner.name)
         if value is not None:
-            return value[..., owner.column_of(v.name)]
+            # One member out of its owner's value: a view along the member axis.
+            return owner.member_of(value, v.name)
         raise KeyError(
             f"{type(self).__name__}({self.name!r}): no value for input "
             f"{v.name!r} (owner {owner.name!r}) in keys {sorted(values)}."

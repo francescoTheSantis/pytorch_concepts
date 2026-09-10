@@ -58,7 +58,6 @@ Probabilistic Models
    ProbabilisticModel
    BayesianNetwork
    MarkovNetwork
-   ChainGraph
 
 Inference
 ---------
