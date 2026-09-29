@@ -7,7 +7,7 @@ hydra:
     name: test
   sweeper:
     params:
-      dataset: dag_asia, dag_sachs, dag_insurance, celeba
+      dataset: dsprites_regression
       model: cbm, cem, c2bm
 
 seed: 42   # run, model init and training seed
@@ -18,7 +18,7 @@ dataset:
     batch_size: 2048
 
 # precompute and cache backbone embeddings
-precompute_embeddings: True
+precompute_embeddings: False
 force_precompute: False # Recompute even if a cache file exists.
 
 model:
@@ -42,7 +42,7 @@ metrics:
   per_concept: true # true or ${dataset.default_task_names}
 
 trainer:
-  max_epochs: 10
+  max_epochs: 1
   patience: 20
   logger: null # null / wandb
   log_model: false  # whether to save checkpoint on wandb
